@@ -1,0 +1,44 @@
+# Default values for demo-app-nextjs
+replicaCount: 1
+
+image:
+  repository: 211125671185.dkr.ecr.us-east-2.amazonaws.com/demo-nextjs-app
+  pullPolicy: Always
+  tag: "latest"
+
+service:
+  type: ClusterIP  # Changed from LoadBalancer to ClusterIP for internal use
+  port: 80
+  targetPort: 3000
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2048Mi
+  requests:
+    cpu: 2000m
+    memory: 2048Mi
+
+# Elasticsearch configuration
+elasticsearch:
+  secretName: elasticsearch-credentials
+  url: "https://k8s-elastics-quicksta-5fa192ae0b-7e37b9b945113c03.elb.us-east-2.amazonaws.com:9200"
+  username: "elastic"
+  password: "49Y7cI3VA9g88dAfWiGj4G29"
+
+opensearch:
+  secretName: opensearch-credentials
+  url: "https://vpc-os-219-bjzfujoigvt2ssdivjcyu2envq.us-east-2.es.amazonaws.com"
+  username: "elastic"
+  password: "49Y7cI3VA9g88dAfWiGj4G29%"
+  use: true
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
