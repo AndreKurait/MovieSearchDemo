@@ -10,37 +10,29 @@ let client: any;
 
 if (useOpenSearch) {
   client = new OpenSearchClient({
-    node: process.env.OPENSEARCH_URL || 'http://localhost:9200',
+    node: process.env.OPENSEARCH_URL ?? 'http://localhost:9200',
     auth: {
-      username: process.env.OPENSEARCH_USERNAME || 'admin',
-      password: process.env.OPENSEARCH_PASSWORD || ''
+      username: process.env.OPENSEARCH_USERNAME ?? 'elastic',
+      password: process.env.OPENSEARCH_PASSWORD ?? ''
     },
-    ssl: {
-      rejectUnauthorized: false
-    },
-    requestTimeout: 5000, // 5 seconds
-    maxRetries: 15, // Increased retries for shorter timeout
-    sniffOnStart: false,
-    sniffOnConnectionFault: false
+    requestTimeout: 3_000,
+    maxRetries: 1,
   });
 } else {
   client = new ElasticsearchClient({
-    node: process.env.ELASTICSEARCH_URL || 'http://localhost:9200',
+    node: process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200',
     auth: {
-      username: process.env.ELASTICSEARCH_USERNAME || 'elastic',
-      password: process.env.ELASTICSEARCH_PASSWORD || ''
+      username: process.env.ELASTICSEARCH_USERNAME ?? 'elastic',
+      password: process.env.ELASTICSEARCH_PASSWORD ?? ''
     },
     tls: {
       rejectUnauthorized: false
     },
-    requestTimeout: 5000, // 5 seconds
-    maxRetries: 15, // Increased retries for shorter timeout
-    sniffOnStart: false,
-    sniffOnConnectionFault: false
+    requestTimeout: 3_000,
+    maxRetries: 1,
   });
 }
 
-// Log which client is being used
 console.log(`Using ${useOpenSearch ? 'OpenSearch' : 'Elasticsearch'} client`);
 
 // Movie data structure for TMDB dataset
@@ -61,7 +53,6 @@ export async function searchMovies(query: string): Promise<{ movies: Movie[], to
   try {
     const startTime = Date.now();
     
-    // Build search request compatible with both clients
     const searchRequest = {
       index: 'movies',
       body: {
@@ -69,7 +60,7 @@ export async function searchMovies(query: string): Promise<{ movies: Movie[], to
           function_score: {
             query: {
               bool: {
-                must: [
+                should: [
                   {
                     multi_match: {
                       query,
@@ -120,8 +111,8 @@ export async function searchMovies(query: string): Promise<{ movies: Movie[], to
       }
     };
 
-    // Execute search with appropriate client
-    const result = await client.search(searchRequest);
+    console.log(`Call: ${JSON.stringify(searchRequest, null, 2)}`);    const result = await client.search(searchRequest);
+    console.log(`[OpenSearch] Search completed successfully`);
     
     // Handle response structure differences
     const responseBody = useOpenSearch ? result.body : result;
@@ -173,8 +164,14 @@ export async function searchMovies(query: string): Promise<{ movies: Movie[], to
       : responseBody.hits.total?.value || 0;
 
     const latency = Date.now() - startTime;
+    console.log(`[OpenSearch] Search completed in ${latency}ms, found ${total} results`);
     return { movies, total, latency };
   } catch (error) {
+    console.error(`[OpenSearch] Search failed for query: "${query}"`);
+    console.error(`[OpenSearch] Error details:`, error);
+    if (error instanceof Error && error.message.includes('timeout')) {
+      console.error(`[OpenSearch] Request timed out after 30 seconds`);
+    }
     throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -197,8 +194,11 @@ export async function indexMovie(movie: Omit<Movie, 'id' | '_score'>): Promise<{
     // Handle response structure differences
     const responseBody = useOpenSearch ? result.body : result;
 
+    console.log(`[OpenSearch] Movie indexed successfully with ID: ${responseBody._id}`);
     return { id: responseBody._id };
   } catch (error) {
+    console.error(`[OpenSearch] Failed to index movie`);
+    console.error(`[OpenSearch] Error details:`, error);
     throw new Error(`Failed to index movie: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
