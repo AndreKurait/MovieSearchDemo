@@ -23,29 +23,18 @@ resource "aws_s3_bucket_public_access_block" "es_snapshots" {
   restrict_public_buckets = true
 }
 
-# IAM role for Elasticsearch pods (IRSA)
+# IAM role for Elasticsearch pods (EKS Pod Identity)
 data "aws_caller_identity" "current" {}
 
 data "aws_iam_policy_document" "es_assume_role" {
+  # EKS Pod Identity trust
   statement {
     effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    actions = ["sts:AssumeRole", "sts:TagSession"]
 
     principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${module.eks.oidc_provider}:sub"
-      values   = ["system:serviceaccount:${var.name}:elasticsearch"]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${module.eks.oidc_provider}:aud"
-      values   = ["sts.amazonaws.com"]
+      type        = "Service"
+      identifiers = ["pods.eks.amazonaws.com"]
     }
   }
 }
@@ -53,6 +42,13 @@ data "aws_iam_policy_document" "es_assume_role" {
 resource "aws_iam_role" "elasticsearch" {
   name               = "${var.name}-elasticsearch"
   assume_role_policy = data.aws_iam_policy_document.es_assume_role.json
+}
+
+resource "aws_eks_pod_identity_association" "elasticsearch" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = var.name
+  service_account = "elasticsearch"
+  role_arn        = aws_iam_role.elasticsearch.arn
 }
 
 # S3 access for all buckets

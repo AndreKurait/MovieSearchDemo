@@ -10,8 +10,6 @@ TF=$(command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
 # Get ECR URLs from terraform/tofu output
 ECR_URL=$(cd "$ROOT_DIR/tofu" && $TF output -raw ecr_repository_url 2>/dev/null)
 LOCUST_ECR_URL=$(cd "$ROOT_DIR/tofu" && $TF output -raw locust_ecr_repository_url 2>/dev/null || echo "")
-ES_IAM_ROLE_ARN=$(cd "$ROOT_DIR/tofu" && $TF output -raw es_iam_role_arn 2>/dev/null || echo "")
-
 if [ -z "$ECR_URL" ]; then
     echo "Error: Could not get ECR URL. Run 'make apply' first."
     exit 1
@@ -20,13 +18,11 @@ fi
 echo "Deploying to Kubernetes..."
 echo "ECR URL: $ECR_URL"
 echo "Locust ECR URL: ${LOCUST_ECR_URL:-not set}"
-echo "ES IAM Role ARN: ${ES_IAM_ROLE_ARN:-not set}"
 
-# Apply manifests with image/IAM substitution (elasticsearch first for namespace + StorageClass)
+# Apply manifests with image substitution (elasticsearch first for namespace + StorageClass)
 for file in "$ROOT_DIR/k8s/elasticsearch.yaml" "$ROOT_DIR/k8s/app.yaml"; do
     echo "Applying $file..."
     sed -e "s|IMAGE_PLACEHOLDER|$ECR_URL:latest|g" \
-        -e "s|ES_IAM_ROLE_ARN_PLACEHOLDER|$ES_IAM_ROLE_ARN|g" \
         "$file" | kubectl apply -f -
 done
 

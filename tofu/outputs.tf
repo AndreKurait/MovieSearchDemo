@@ -29,7 +29,7 @@ output "es_snapshots_bucket" {
 }
 
 output "es_iam_role_arn" {
-  description = "IAM role ARN for Elasticsearch IRSA"
+  description = "IAM role ARN for Elasticsearch Pod Identity"
   value       = aws_iam_role.elasticsearch.arn
 }
 

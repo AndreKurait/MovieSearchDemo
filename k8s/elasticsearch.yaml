@@ -32,14 +32,12 @@ spec:
   selector:
     app: elasticsearch
 ---
-# ServiceAccount for Elasticsearch with IRSA (IAM role annotation set at deploy time)
+# ServiceAccount for Elasticsearch (credentials via EKS Pod Identity)
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: elasticsearch
   namespace: movie-demo
-  annotations:
-    eks.amazonaws.com/role-arn: ES_IAM_ROLE_ARN_PLACEHOLDER
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -81,20 +79,56 @@ spec:
         securityContext:
           privileged: true
       containers:
+      - name: credential-proxy
+        image: python:3.12-alpine
+        command:
+        - python3
+        - -c
+        - |
+          import http.server, urllib.request, os
+
+          TOKEN_FILE = "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token"
+          UPSTREAM = "http://169.254.170.23:80"
+
+          class Handler(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  token = open(TOKEN_FILE).read().strip()
+                  req = urllib.request.Request(
+                      UPSTREAM + self.path,
+                      headers={"Authorization": token},
+                  )
+                  try:
+                      resp = urllib.request.urlopen(req)
+                      body = resp.read()
+                      self.send_response(resp.status)
+                      self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))
+                      self.end_headers()
+                      self.wfile.write(body)
+                  except urllib.error.HTTPError as e:
+                      self.send_response(e.code)
+                      self.end_headers()
+                      self.wfile.write(e.read())
+              def log_message(self, *a): pass
+
+          http.server.HTTPServer(("127.0.0.1", 9999), Handler).serve_forever()
+        ports:
+        - containerPort: 9999
       - name: elasticsearch
         image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
         command:
         - bash
         - -c
         - |
-          # ES repository-s3 expects the IRSA web identity token symlink at:
-          # config/repository-s3/aws-web-identity-token-file
-          if [ -n "$AWS_WEB_IDENTITY_TOKEN_FILE" ] && [ -f "$AWS_WEB_IDENTITY_TOKEN_FILE" ]; then
-            mkdir -p /usr/share/elasticsearch/config/repository-s3
-            ln -sf "$AWS_WEB_IDENTITY_TOKEN_FILE" /usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file
-            echo "Created S3 web identity token symlink for repository-s3"
-          fi
-          # Start Elasticsearch normally
+          # Clean any stale S3 keystore entries from previous config attempts
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.role_arn 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.role_session_name 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.identity_token_file 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.region 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.access_key 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.secret_key 2>/dev/null || true
+          /usr/share/elasticsearch/bin/elasticsearch-keystore remove s3.client.default.session_token 2>/dev/null || true
+
+          # Start Elasticsearch — S3 credentials provided by EKS Pod Identity via localhost proxy
           exec /usr/local/bin/docker-entrypoint.sh eswrapper
         ports:
         - containerPort: 9200
@@ -102,6 +136,8 @@ spec:
         - containerPort: 9300
           name: transport
         env:
+        - name: AWS_CONTAINER_CREDENTIALS_FULL_URI
+          value: "http://127.0.0.1:9999/v1/credentials"
         - name: node.name
           valueFrom:
             fieldRef:
