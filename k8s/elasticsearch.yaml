@@ -1,0 +1,172 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: movie-demo
+  labels:
+    app.kubernetes.io/name: movie-demo
+---
+# StorageClass for EKS Auto Mode (uses EBS CSI driver built-in)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ebs-sc
+provisioner: ebs.csi.eks.amazonaws.com
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+parameters:
+  type: gp3
+---
+# Headless service for StatefulSet DNS-based discovery
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-headless
+  namespace: movie-demo
+spec:
+  clusterIP: None
+  ports:
+  - port: 9200
+    name: http
+  - port: 9300
+    name: transport
+  selector:
+    app: elasticsearch
+---
+# ServiceAccount for Elasticsearch with IRSA (IAM role annotation set at deploy time)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: elasticsearch
+  namespace: movie-demo
+  annotations:
+    eks.amazonaws.com/role-arn: ES_IAM_ROLE_ARN_PLACEHOLDER
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: movie-demo
+spec:
+  serviceName: elasticsearch-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      serviceAccountName: elasticsearch
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app: elasticsearch
+      initContainers:
+      - name: fix-permissions
+        image: busybox:1.36
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+        securityContext:
+          runAsUser: 0
+      - name: increase-vm-max-map
+        image: busybox:1.36
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      containers:
+      - name: elasticsearch
+        image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+        command:
+        - bash
+        - -c
+        - |
+          # ES repository-s3 expects the IRSA web identity token symlink at:
+          # config/repository-s3/aws-web-identity-token-file
+          if [ -n "$AWS_WEB_IDENTITY_TOKEN_FILE" ] && [ -f "$AWS_WEB_IDENTITY_TOKEN_FILE" ]; then
+            mkdir -p /usr/share/elasticsearch/config/repository-s3
+            ln -sf "$AWS_WEB_IDENTITY_TOKEN_FILE" /usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file
+            echo "Created S3 web identity token symlink for repository-s3"
+          fi
+          # Start Elasticsearch normally
+          exec /usr/local/bin/docker-entrypoint.sh eswrapper
+        ports:
+        - containerPort: 9200
+          name: http
+        - containerPort: 9300
+          name: transport
+        env:
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: cluster.name
+          value: movie-demo
+        - name: discovery.seed_hosts
+          value: "elasticsearch-0.elasticsearch-headless.movie-demo.svc.cluster.local,elasticsearch-1.elasticsearch-headless.movie-demo.svc.cluster.local,elasticsearch-2.elasticsearch-headless.movie-demo.svc.cluster.local"
+        - name: cluster.initial_master_nodes
+          value: "elasticsearch-0,elasticsearch-1,elasticsearch-2"
+        - name: xpack.security.enabled
+          value: "false"
+        - name: xpack.security.http.ssl.enabled
+          value: "false"
+        - name: xpack.ml.enabled
+          value: "true"
+        - name: xpack.ml.max_machine_memory_percent
+          value: "60"
+        - name: ES_JAVA_OPTS
+          value: "-Xms4g -Xmx4g"
+        resources:
+          requests:
+            cpu: "4"
+            memory: 8Gi
+          limits:
+            cpu: "8"
+            memory: 12Gi
+        readinessProbe:
+          httpGet:
+            path: /_cluster/health?local=true
+            port: 9200
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /_cluster/health?local=true
+            port: 9200
+          initialDelaySeconds: 90
+          periodSeconds: 15
+          timeoutSeconds: 5
+        volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+  volumeClaimTemplates:
+  - metadata:
+      name: es-data
+    spec:
+      storageClassName: ebs-sc
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 30Gi
+---
+# Client-facing service (load balances across all nodes)
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: movie-demo
+spec:
+  type: ClusterIP
+  ports:
+  - port: 9200
+    targetPort: 9200
+    name: http
+  selector:
+    app: elasticsearch

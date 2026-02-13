@@ -1,0 +1,41 @@
+# OpenTofu / Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.*
+**/*.tfplan
+**/tfplan
+**/*.tfvars
+!*.tfvars.example
+**/.terraform.tfstate.lock.info
+
+# Node.js
+**/node_modules/
+**/.next/
+**/out/
+**/.npm
+**/npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (never commit)
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+**/dist/
+**/build/
+
+# OpenCode tooling
+.opencode/

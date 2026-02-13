@@ -1,0 +1,248 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-enriched-movies
+  namespace: movie-demo
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loader
+        image: python:3.11-slim
+        env:
+        - name: TMDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tmdb-api-key
+              key: api-key
+        - name: ES_URL
+          value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        - name: MAX_MOVIES
+          value: "10000"
+        - name: BATCH_SIZE
+          value: "50"
+        - name: WORKERS
+          value: "20"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, json, gzip, urllib.request, time, sys
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          ES_URL = os.environ["ES_URL"]
+          API_KEY = os.environ["TMDB_API_KEY"]
+          BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "50"))
+          MAX_MOVIES = int(os.environ.get("MAX_MOVIES", "10000"))
+          WORKERS = int(os.environ.get("WORKERS", "20"))
+
+          def wait_for_es():
+              for _ in range(30):
+                  try:
+                      urllib.request.urlopen(f"{ES_URL}/_cluster/health", timeout=5)
+                      return True
+                  except: time.sleep(2)
+              return False
+
+          def check_elser():
+              """Check if ELSER model is deployed and running"""
+              try:
+                  req = urllib.request.Request(f"{ES_URL}/_ml/trained_models/.elser_model_2/_stats")
+                  with urllib.request.urlopen(req, timeout=10) as r:
+                      data = json.loads(r.read())
+                      for m in data.get("trained_model_stats", []):
+                          ds = m.get("deployment_stats", {})
+                          if ds.get("state") == "started":
+                              return True
+                          alloc = ds.get("allocation_status", {})
+                          if alloc.get("state") == "started":
+                              return True
+                  return False
+              except:
+                  return False
+
+          def fetch_movie(movie_id):
+              """Fetch movie with enriched data (credits, keywords) from TMDB"""
+              for attempt in range(3):
+                  try:
+                      url = f"https://api.themoviedb.org/3/movie/{movie_id}?append_to_response=credits,keywords"
+                      req = urllib.request.Request(url, headers={"Authorization": f"Bearer {API_KEY}"})
+                      with urllib.request.urlopen(req, timeout=15) as r:
+                          m = json.loads(r.read())
+                          if m.get("adult"): return None
+                          if not m.get("title"): return None
+
+                          # Extract top 5 cast members
+                          cast = []
+                          for c in (m.get("credits", {}).get("cast", []))[:5]:
+                              cast.append({
+                                  "name": c.get("name", ""),
+                                  "character": c.get("character", ""),
+                                  "profile_path": c.get("profile_path")
+                              })
+
+                          # Extract key crew (director, writer)
+                          crew = []
+                          for c in m.get("credits", {}).get("crew", []):
+                              if c.get("job") in ("Director", "Writer", "Screenplay"):
+                                  crew.append({
+                                      "name": c.get("name", ""),
+                                      "job": c.get("job", "")
+                                  })
+
+                          # Extract keywords
+                          keywords = [kw["name"] for kw in m.get("keywords", {}).get("keywords", [])]
+
+                          return {
+                              "title": m.get("title", ""),
+                              "tagline": m.get("tagline", ""),
+                              "overview": m.get("overview", "") or "No overview available",
+                              "genres": [g["name"] for g in m.get("genres", [])],
+                              "release_date": m.get("release_date") or None,
+                              "vote_average": m.get("vote_average", 0),
+                              "vote_count": m.get("vote_count", 0),
+                              "popularity": m.get("popularity", 0),
+                              "poster_path": m.get("poster_path"),
+                              "backdrop_path": m.get("backdrop_path"),
+                              "runtime": m.get("runtime"),
+                              "original_language": m.get("original_language"),
+                              "cast": cast,
+                              "crew": crew,
+                              "keywords": keywords
+                          }
+                  except Exception as e:
+                      if "429" in str(e):
+                          time.sleep(2 + attempt * 2)
+                      elif attempt == 2:
+                          return None
+              return None
+
+          def bulk_index(movies):
+              """Bulk index movies - pipeline is set as index default"""
+              if not movies: return 0
+              body = ""
+              for mid, m in movies:
+                  body += json.dumps({"index": {"_id": str(mid)}}) + "\n"
+                  body += json.dumps(m) + "\n"
+
+              req = urllib.request.Request(
+                  f"{ES_URL}/movies/_bulk?timeout=5m",
+                  data=body.encode(),
+                  method="POST",
+                  headers={"Content-Type": "application/json"}
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=300) as r:
+                      result = json.loads(r.read())
+                      errors = sum(1 for item in result.get("items", []) if item.get("index", {}).get("error"))
+                      if errors:
+                          # Print first error for debugging
+                          for item in result.get("items", []):
+                              err = item.get("index", {}).get("error")
+                              if err:
+                                  print(f"  Bulk error: {json.dumps(err)[:200]}")
+                                  break
+                      return len(movies) - errors
+              except Exception as e:
+                  print(f"  Bulk request failed: {e}")
+                  return 0
+
+          # Main
+          print("=" * 60)
+          print("Enriched Movie Loader with ELSER")
+          print(f"Max movies: {MAX_MOVIES}, Batch: {BATCH_SIZE}, Workers: {WORKERS}")
+          print("=" * 60)
+
+          print("\nWaiting for Elasticsearch...")
+          if not wait_for_es():
+              print("ES not ready"); sys.exit(1)
+
+          print("Checking ELSER model...")
+          if check_elser():
+              print("ELSER model is deployed - embeddings will be generated at index time")
+          else:
+              print("WARNING: ELSER model not deployed - indexing without embeddings")
+
+          # Download daily export to get movie IDs
+          print("\nDownloading TMDB movie IDs...")
+          from datetime import datetime, timedelta
+          # Try today and yesterday
+          for days_ago in range(1, 5):
+              date = (datetime.utcnow() - timedelta(days=days_ago)).strftime("%m_%d_%Y")
+              url = f"http://files.tmdb.org/p/exports/movie_ids_{date}.json.gz"
+              try:
+                  with urllib.request.urlopen(url, timeout=30) as r:
+                      data = gzip.decompress(r.read()).decode()
+                  movie_ids = []
+                  for line in data.strip().split("\n"):
+                      if line:
+                          entry = json.loads(line)
+                          # Only popular movies to ensure quality
+                          if entry.get("popularity", 0) > 1.0:
+                              movie_ids.append(entry["id"])
+                  # Sort by popularity (we have it from the export)
+                  print(f"Found {len(movie_ids)} popular movies from export dated {date}")
+                  break
+              except Exception as e:
+                  print(f"  Export for {date} not available: {e}")
+          else:
+              print("Failed to download any TMDB export"); sys.exit(1)
+
+          movie_ids = movie_ids[:MAX_MOVIES]
+          print(f"Will process {len(movie_ids)} movies")
+
+          # Fetch and index
+          loaded = 0
+          failed = 0
+          batch = []
+          start_time = time.time()
+
+          with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+              futures = {ex.submit(fetch_movie, mid): mid for mid in movie_ids}
+              for f in as_completed(futures):
+                  mid = futures[f]
+                  try:
+                      m = f.result()
+                  except Exception:
+                      m = None
+
+                  if m:
+                      batch.append((mid, m))
+                      if len(batch) >= BATCH_SIZE:
+                          indexed = bulk_index(batch)
+                          loaded += indexed
+                          failed += len(batch) - indexed
+                          elapsed = time.time() - start_time
+                          rate = loaded / elapsed if elapsed > 0 else 0
+                          print(f"Loaded {loaded} movies ({rate:.0f}/s, {failed} failed)...")
+                          batch = []
+                          # ELSER inference is CPU-intensive, pace the requests
+                          time.sleep(0.5)
+
+              if batch:
+                  indexed = bulk_index(batch)
+                  loaded += indexed
+                  failed += len(batch) - indexed
+
+          elapsed = time.time() - start_time
+          print(f"\nDone! Loaded {loaded} movies in {elapsed:.0f}s ({failed} failed)")
+          print(f"Average rate: {loaded/elapsed:.0f} movies/sec")
+
+          # Verify
+          time.sleep(2)
+          try:
+              req = urllib.request.Request(f"{ES_URL}/movies/_count")
+              with urllib.request.urlopen(req) as r:
+                  count = json.loads(r.read()).get("count", 0)
+              print(f"Total documents in index: {count}")
+          except:
+              pass
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 4Gi

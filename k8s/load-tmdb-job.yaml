@@ -1,0 +1,179 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-tmdb-movies
+  namespace: movie-demo
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loader
+        image: python:3.11-slim
+        env:
+        - name: TMDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tmdb-api-key
+              key: api-key
+        - name: ES_URL
+          value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, json, gzip, urllib.request, time
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          ES_URL = os.environ["ES_URL"]
+          API_KEY = os.environ["TMDB_API_KEY"]
+          BATCH_SIZE = 500
+          MAX_MOVIES = 500000  # 500K movies
+
+          def wait_for_es():
+              for _ in range(30):
+                  try:
+                      urllib.request.urlopen(f"{ES_URL}/_cluster/health", timeout=5)
+                      return True
+                  except: time.sleep(2)
+              return False
+
+          def create_index():
+              mapping = json.dumps({
+                  "settings": {
+                      "number_of_shards": 1,
+                      "number_of_replicas": 0,
+                      "analysis": {
+                          "analyzer": {
+                              "autocomplete": {
+                                  "type": "custom",
+                                  "tokenizer": "standard",
+                                  "filter": ["lowercase", "edge_ngram_filter"]
+                              },
+                              "autocomplete_search": {
+                                  "type": "custom",
+                                  "tokenizer": "standard",
+                                  "filter": ["lowercase"]
+                              }
+                          },
+                          "filter": {
+                              "edge_ngram_filter": {
+                                  "type": "edge_ngram",
+                                  "min_gram": 2,
+                                  "max_gram": 15
+                              }
+                          }
+                      }
+                  },
+                  "mappings": {"properties": {
+                      "title": {
+                          "type": "text",
+                          "analyzer": "english",
+                          "fields": {
+                              "keyword": {"type": "keyword"},
+                              "raw": {"type": "text", "analyzer": "standard"},
+                              "autocomplete": {
+                                  "type": "text",
+                                  "analyzer": "autocomplete",
+                                  "search_analyzer": "autocomplete_search"
+                              }
+                          }
+                      },
+                      "tagline": {"type": "text", "analyzer": "english"},
+                      "overview": {"type": "text", "analyzer": "english"},
+                      "genres": {"type": "keyword"},
+                      "release_date": {"type": "date", "ignore_malformed": True},
+                      "vote_average": {"type": "float"},
+                      "vote_count": {"type": "integer"},
+                      "popularity": {"type": "float"}
+                  }}
+              }).encode()
+              try:
+                  req = urllib.request.Request(f"{ES_URL}/movies", data=mapping, method="PUT",
+                      headers={"Content-Type": "application/json"})
+                  urllib.request.urlopen(req)
+                  print("Created index")
+              except Exception as e:
+                  if "already_exists" not in str(e): print(f"Index error: {e}")
+
+          def fetch_movie(movie_id):
+              for attempt in range(3):
+                  try:
+                      url = f"https://api.themoviedb.org/3/movie/{movie_id}"
+                      req = urllib.request.Request(url, headers={"Authorization": f"Bearer {API_KEY}"})
+                      with urllib.request.urlopen(req, timeout=10) as r:
+                          m = json.loads(r.read())
+                          if m.get("adult"): return None
+                          return {
+                              "title": m.get("title", ""),
+                              "tagline": m.get("tagline", ""),
+                              "overview": m.get("overview", ""),
+                              "genres": [g["name"] for g in m.get("genres", [])],
+                              "release_date": m.get("release_date") or None,
+                              "vote_average": m.get("vote_average", 0),
+                              "vote_count": m.get("vote_count", 0),
+                              "popularity": m.get("popularity", 0)
+                          }
+                  except Exception as e:
+                      if "429" in str(e): time.sleep(1 + attempt)
+                      elif attempt == 2: return None
+              return None
+
+          def bulk_index(movies):
+              if not movies: return
+              body = ""
+              for mid, m in movies:
+                  body += json.dumps({"index": {"_id": str(mid)}}) + "\n"
+                  body += json.dumps(m) + "\n"
+              req = urllib.request.Request(f"{ES_URL}/movies/_bulk", data=body.encode(),
+                  method="POST", headers={"Content-Type": "application/json"})
+              urllib.request.urlopen(req)
+
+          print("Waiting for Elasticsearch...")
+          if not wait_for_es():
+              print("ES not ready"); exit(1)
+
+          create_index()
+
+          # Download daily export
+          print("Downloading TMDB movie IDs...")
+          from datetime import datetime, timedelta
+          date = (datetime.utcnow() - timedelta(days=1)).strftime("%m_%d_%Y")
+          url = f"http://files.tmdb.org/p/exports/movie_ids_{date}.json.gz"
+          
+          try:
+              with urllib.request.urlopen(url) as r:
+                  data = gzip.decompress(r.read()).decode()
+              movie_ids = [json.loads(line)["id"] for line in data.strip().split("\n") if line]
+              print(f"Found {len(movie_ids)} movies, loading up to {MAX_MOVIES}...")
+          except Exception as e:
+              print(f"Failed to download: {e}"); exit(1)
+
+          # Fetch and index in parallel
+          loaded = 0
+          batch = []
+          with ThreadPoolExecutor(max_workers=40) as ex:
+              futures = {ex.submit(fetch_movie, mid): mid for mid in movie_ids[:MAX_MOVIES]}
+              for f in as_completed(futures):
+                  mid = futures[f]
+                  m = f.result()
+                  if m:
+                      batch.append((mid, m))
+                      if len(batch) >= BATCH_SIZE:
+                          bulk_index(batch)
+                          loaded += len(batch)
+                          print(f"Loaded {loaded} movies...")
+                          batch = []
+              if batch:
+                  bulk_index(batch)
+                  loaded += len(batch)
+
+          print(f"Done! Loaded {loaded} non-adult movies.")
+        resources:
+          requests:
+            cpu: "8"
+            memory: 16Gi
+          limits:
+            cpu: "16"
+            memory: 32Gi
