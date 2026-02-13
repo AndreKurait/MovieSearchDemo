@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: locust
+  namespace: movie-demo
+  labels:
+    app: locust
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: locust
+  template:
+    metadata:
+      labels:
+        app: locust
+    spec:
+      containers:
+      - name: locust
+        image: LOCUST_IMAGE_PLACEHOLDER
+        env:
+        - name: LOCUST_HOST
+          value: "http://movie-demo-app.movie-demo.svc.cluster.local"
+        - name: LOCUST_HEADLESS
+          value: "true"
+        - name: LOCUST_USERS
+          value: "50"
+        - name: LOCUST_SPAWN_RATE
+          value: "50"
+        - name: LOCUST_RUN_TIME
+          value: "500m"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi

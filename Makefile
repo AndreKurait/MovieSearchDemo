@@ -1,4 +1,4 @@
-.PHONY: init plan apply destroy build deploy kubeconfig port-forward load-data setup-elser load-tmdb load-enriched create-tmdb-secret clean all
+.PHONY: init plan apply destroy build deploy kubeconfig port-forward deploy-locust locust-logs stop-locust load-data setup-elser load-tmdb load-enriched create-tmdb-secret clean all
 
 TF := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
 
@@ -55,6 +55,19 @@ load-enriched: create-tmdb-secret
 port-forward:
 	@echo "App: http://localhost:8080"
 	kubectl port-forward svc/movie-demo-app -n movie-demo 8080:80
+
+# Locust load testing (headless — starts automatically on deploy)
+deploy-locust:
+	@LOCUST_ECR_URL=$$(cd tofu && $(TF) output -raw locust_ecr_repository_url 2>/dev/null); \
+	if [ -z "$$LOCUST_ECR_URL" ]; then echo "Error: No locust ECR repo. Run 'make apply' first."; exit 1; fi; \
+	sed -e "s|LOCUST_IMAGE_PLACEHOLDER|$$LOCUST_ECR_URL:latest|g" k8s/locust.yaml | kubectl apply -f -
+	kubectl rollout status deployment/locust -n movie-demo --timeout=60s
+
+locust-logs:
+	kubectl logs -f -n movie-demo -l app=locust
+
+stop-locust:
+	kubectl delete deployment locust -n movie-demo --ignore-not-found
 
 # Cleanup
 clean:

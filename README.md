@@ -1,6 +1,6 @@
 # Movie Search Demo
 
-Movie search app on EKS Auto Mode with Elasticsearch, featuring keyword, semantic (ELSER), and hybrid search.
+Movie search app on EKS Auto Mode with Elasticsearch, featuring keyword, semantic (ELSER), and hybrid search. Includes Locust load testing for performance validation.
 
 ## Quick Start
 
@@ -8,8 +8,8 @@ Movie search app on EKS Auto Mode with Elasticsearch, featuring keyword, semanti
 make init          # Initialize terraform
 make apply         # Deploy infrastructure (~15 min)
 make kubeconfig    # Configure kubectl
-make build         # Build & push Docker image
-make deploy        # Deploy to Kubernetes
+make build         # Build & push Docker images (app + locust)
+make deploy        # Deploy to Kubernetes (includes locust)
 make port-forward  # Access at http://localhost:8080
 ```
 
@@ -18,7 +18,8 @@ make port-forward  # Access at http://localhost:8080
 - **EKS Auto Mode** - Automatic node provisioning, no node management needed
 - **Elasticsearch 8.17** - Search backend with ELSER v2 for semantic search
 - **Next.js 15** - Frontend application with React 19
-- **ECR** - Container registry
+- **Locust** - Load testing framework, runs headless on the cluster
+- **ECR** - Container registry (app + locust images)
 - **OpenTofu/Terraform** - Infrastructure as code
 
 ## Structure
@@ -31,10 +32,15 @@ make port-forward  # Access at http://localhost:8080
 ├── k8s/          # Kubernetes manifests
 │   ├── elasticsearch.yaml    # ES StatefulSet + StorageClass
 │   ├── app.yaml              # App Deployment + Service
+│   ├── locust.yaml           # Locust load testing (headless)
 │   ├── setup-elser-job.yaml  # ELSER model setup
 │   ├── load-data-job.yaml    # Sample data (15 movies)
 │   ├── load-tmdb-job.yaml    # TMDB bulk load (up to 500K)
 │   └── load-enriched-job.yaml # TMDB enriched data with ELSER
+├── locust/       # Locust load testing
+│   ├── locustfile.py   # Test scenarios (search, semantic, genres, etc.)
+│   ├── Dockerfile
+│   └── requirements.txt
 ├── tofu/         # OpenTofu/Terraform infrastructure
 ├── scripts/      # Build and deploy scripts
 └── Makefile
@@ -56,9 +62,39 @@ make port-forward  # Access at http://localhost:8080
 
 | Command | Description |
 |---------|-------------|
-| `make build` | Build & push multi-arch Docker image to ECR |
-| `make deploy` | Deploy Elasticsearch + app to Kubernetes |
+| `make build` | Build & push multi-arch Docker images (app + locust) to ECR |
+| `make deploy` | Deploy Elasticsearch + app + locust to Kubernetes |
 | `make port-forward` | Access app at http://localhost:8080 |
+
+### Load Testing
+
+Locust is deployed in headless mode and starts automatically with `make deploy`. It runs 50 concurrent users for 500 minutes, exercising all API endpoints.
+
+| Command | Description |
+|---------|-------------|
+| `make deploy-locust` | Deploy/redeploy locust independently |
+| `make locust-logs` | Stream locust output (stats, errors) |
+| `make stop-locust` | Stop the load test |
+
+The load test exercises:
+- **Keyword search** - `/api/search?q=...` with various queries
+- **Semantic search** - `/api/search?q=...&semanticRatio=0.3-1.0` (ELSER hybrid)
+- **Genre-filtered search** - `/api/search?q=...&genres=...`
+- **Movie details** - `/api/movies/{id}`
+- **Similar movies** - `/api/movies/{id}/similar`
+- **Genre listing** - `/api/genres`
+- **Movie creation** - `POST /api/movies` with random data
+
+To change the load test parameters, edit `k8s/locust.yaml`:
+```yaml
+env:
+- name: LOCUST_USERS
+  value: "50"          # concurrent users
+- name: LOCUST_SPAWN_RATE
+  value: "50"          # users spawned per second
+- name: LOCUST_RUN_TIME
+  value: "500m"        # test duration
+```
 
 ### Data Loading
 

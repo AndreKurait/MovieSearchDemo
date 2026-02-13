@@ -32,3 +32,8 @@ output "es_iam_role_arn" {
   description = "IAM role ARN for Elasticsearch IRSA"
   value       = aws_iam_role.elasticsearch.arn
 }
+
+output "locust_ecr_repository_url" {
+  description = "ECR repository URL for locust"
+  value       = aws_ecr_repository.locust.repository_url
+}
