@@ -83,7 +83,6 @@ The load test exercises:
 - **Movie details** - `/api/movies/{id}`
 - **Similar movies** - `/api/movies/{id}/similar`
 - **Genre listing** - `/api/genres`
-- **Movie creation** - `POST /api/movies` with random data
 
 To change the load test parameters, edit `k8s/locust.yaml`:
 ```yaml
