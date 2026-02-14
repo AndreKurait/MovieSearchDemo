@@ -206,3 +206,21 @@ spec:
     name: http
   selector:
     app: elasticsearch
+---
+# Internal NLB for Elasticsearch (VPC-accessible only)
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch-nlb
+  namespace: movie-demo
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 9200
+    targetPort: 9200
+    name: http
+  selector:
+    app: elasticsearch
