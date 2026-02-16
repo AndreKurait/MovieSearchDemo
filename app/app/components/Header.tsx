@@ -37,16 +37,23 @@ export default function Header() {
 
             {/* Right side controls */}
             <div className="flex items-center gap-2 flex-shrink-0">
-              <button
-                onClick={() => setShowDebug(prev => !prev)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-medium transition-colors ${
-                  showDebug
-                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                    : 'bg-bg-tertiary text-text-tertiary hover:text-text-secondary border border-transparent'
-                }`}
-              >
-                DEBUG
-              </button>
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <span className="text-xs font-mono font-medium text-text-tertiary">Debug</span>
+                <button
+                  role="switch"
+                  aria-checked={showDebug}
+                  onClick={() => setShowDebug(prev => !prev)}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                    showDebug ? 'bg-amber-500' : 'bg-bg-tertiary border border-border-secondary'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${
+                      showDebug ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                    }`}
+                  />
+                </button>
+              </label>
               <ThemeToggle />
               <a
                 href="https://github.com/akurait/moviedemo"
