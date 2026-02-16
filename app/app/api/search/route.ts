@@ -4,7 +4,6 @@ import { searchMovies, SearchParams } from '@/lib/elasticsearch';
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const query = searchParams.get('q') || '';
-  const semanticRatio = parseFloat(searchParams.get('semanticRatio') || '0');
   const genres = searchParams.get('genres')?.split(',').filter(Boolean) || [];
   const ratingMin = searchParams.get('ratingMin') ? parseFloat(searchParams.get('ratingMin')!) : undefined;
   const ratingMax = searchParams.get('ratingMax') ? parseFloat(searchParams.get('ratingMax')!) : undefined;
@@ -14,7 +13,6 @@ export async function GET(request: NextRequest) {
   try {
     const params: SearchParams = {
       query,
-      semanticRatio: isNaN(semanticRatio) ? 0 : Math.max(0, Math.min(1, semanticRatio)),
       genres: genres.length > 0 ? genres : undefined,
       ratingMin: ratingMin !== undefined && !isNaN(ratingMin) ? ratingMin : undefined,
       ratingMax: ratingMax !== undefined && !isNaN(ratingMax) ? ratingMax : undefined,

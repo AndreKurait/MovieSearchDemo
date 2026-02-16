@@ -39,3 +39,4 @@ Thumbs.db
 
 # OpenCode tooling
 .opencode/
+kubectl

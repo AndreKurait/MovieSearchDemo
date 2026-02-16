@@ -76,7 +76,6 @@ export interface SearchResult {
 
 export interface SearchParams {
   query: string;
-  semanticRatio?: number;   // 0 = keyword only, 1 = semantic only, 0.5 = hybrid
   genres?: string[];
   ratingMin?: number;
   ratingMax?: number;
@@ -90,34 +89,6 @@ export interface SearchParams {
 function getBody(result: any) {
   return useOpenSearch ? result.body : result;
 }
-
-// ─── Check if ELSER is available ────────────────────────────────────
-
-let elserAvailable: boolean | null = null;
-
-async function checkElserAvailable(): Promise<boolean> {
-  if (elserAvailable !== null) return elserAvailable;
-  try {
-    const result = await client.ml.getTrainedModelsStats({
-      model_id: '.elser_model_2'
-    });
-    const body = getBody(result);
-    const models = body.trained_model_stats || [];
-    elserAvailable = models.some(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (m: any) => m.deployment_stats?.state === 'started' ||
-        m.deployment_stats?.allocation_status?.state === 'started'
-    );
-    console.log(`ELSER model available: ${elserAvailable}`);
-  } catch {
-    elserAvailable = false;
-    console.log('ELSER model not available, using keyword-only search');
-  }
-  return elserAvailable ?? false;
-}
-
-// Reset cache periodically so we can detect model becoming available
-setInterval(() => { elserAvailable = null; }, 60_000);
 
 // ─── Build keyword query ────────────────────────────────────────────
 
@@ -224,39 +195,6 @@ function buildKeywordQuery(query: string) {
   };
 }
 
-// ─── Build semantic query (ELSER text_expansion) ───────────────────
-
-function buildSemanticQuery(query: string) {
-  return {
-    bool: {
-      should: [
-        // ELSER sparse vector on overview (combined with keywords+genres at ingest)
-        // This is the primary semantic signal
-        {
-          text_expansion: {
-            'overview_embedding': {
-              model_id: '.elser_model_2',
-              model_text: query,
-              boost: 5
-            }
-          }
-        },
-        // ELSER sparse vector on title - lower weight to avoid
-        // literal title word matches dominating conceptual results
-        {
-          text_expansion: {
-            'title_embedding': {
-              model_id: '.elser_model_2',
-              model_text: query,
-              boost: 1
-            }
-          }
-        }
-      ]
-    }
-  };
-}
-
 // ─── Build filters ──────────────────────────────────────────────────
 
 function buildFilters(params: SearchParams) {
@@ -279,78 +217,18 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
   const startTime = Date.now();
   const {
     query,
-    semanticRatio = 0,
     page = 1,
     pageSize = 24,
   } = params;
 
   const from = (page - 1) * pageSize;
-  const hasElser = await checkElserAvailable();
-  const actualSemanticRatio = hasElser ? semanticRatio : 0;
-
   const filters = buildFilters(params);
 
   try {
-    let searchRequest;
-
-    if (actualSemanticRatio === 0 || !query.trim()) {
-      // Pure keyword search
-      searchRequest = {
-        index: 'movies',
-        body: {
-          query: query.trim() ? buildKeywordQuery(query) : { match_all: {} },
-          ...(filters.length > 0 ? { post_filter: { bool: { must: filters } } } : {}),
-          from,
-          size: pageSize,
-          _source: {
-            excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
-          },
-          track_total_hits: true,
-          aggs: {
-            genres: {
-              terms: { field: 'genres', size: 30 }
-            }
-          },
-          // For empty queries, sort by popularity
-          ...(!query.trim() ? { sort: [{ popularity: 'desc' }] } : {})
-        }
-      };
-    } else if (actualSemanticRatio >= 1) {
-      // Pure semantic search
-      searchRequest = {
-        index: 'movies',
-        body: {
-          query: buildSemanticQuery(query),
-          ...(filters.length > 0 ? { post_filter: { bool: { must: filters } } } : {}),
-          from,
-          size: pageSize,
-          _source: {
-            excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
-          },
-          track_total_hits: true,
-          timeout: '60s',
-          aggs: {
-            genres: {
-              terms: { field: 'genres', size: 30 }
-            }
-          }
-        }
-      };
-    } else {
-      // Hybrid search using RRF (Reciprocal Rank Fusion)
-      // Available in ES 8.14+
-      // Use transport.request directly to avoid client field name transformations
-      const rrfBody = {
-        sub_searches: [
-          { query: buildKeywordQuery(query) },
-          { query: buildSemanticQuery(query) }
-        ],
-        rank: {
-          rrf: {
-            rank_constant: 60,
-            rank_window_size: 100
-          }
-        },
+    const result = await client.search({
+      index: 'movies',
+      body: {
+        query: query.trim() ? buildKeywordQuery(query) : { match_all: {} },
         ...(filters.length > 0 ? { post_filter: { bool: { must: filters } } } : {}),
         from,
         size: pageSize,
@@ -362,35 +240,11 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
           genres: {
             terms: { field: 'genres', size: 30 }
           }
-        }
-      };
+        },
+        ...(!query.trim() ? { sort: [{ popularity: 'desc' }] } : {})
+      }
+    });
 
-      const result = await client.transport.request({
-        method: 'POST',
-        path: '/movies/_search',
-        body: rrfBody
-      });
-      const body = getBody(result);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const movies: Movie[] = body.hits.hits.map((hit: any) => ({
-        id: hit._id,
-        ...hit._source,
-        _score: hit._score,
-      }));
-
-      const total = typeof body.hits.total === 'number'
-        ? body.hits.total
-        : body.hits.total?.value || 0;
-
-      const genres = body.aggregations?.genres?.buckets || [];
-      const latency = Date.now() - startTime;
-
-      return { movies, total, latency, genres };
-    }
-
-    const searchOptions = actualSemanticRatio >= 1 ? { requestTimeout: 60_000 } : {};
-    const result = await client.search(searchRequest, searchOptions);
     const body = getBody(result);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -410,13 +264,6 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
     return { movies, total, latency, genres };
   } catch (error) {
     console.error(`Search failed for query: "${query}"`, error);
-
-    // If semantic or hybrid search fails (e.g. ELSER queue full during ingestion), fall back to keyword
-    if (actualSemanticRatio > 0) {
-      console.log(`Semantic/hybrid search failed (ratio=${actualSemanticRatio}), falling back to keyword search`);
-      return searchMovies({ ...params, semanticRatio: 0 });
-    }
-
     throw new Error(`Search failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
@@ -444,116 +291,45 @@ export async function getMovie(id: string): Promise<Movie | null> {
 
 export async function getSimilarMovies(movieId: string, limit: number = 8): Promise<Movie[]> {
   try {
-    // First get the movie to use its content for similarity
-    const movie = await getMovie(movieId);
-    if (!movie) return [];
-
-    const hasElser = await checkElserAvailable();
-
-    if (hasElser) {
-      // Use ELSER text_expansion for semantic similarity
-      // Keep search text short to avoid ELSER token limit (512)
-      const overview = (movie.overview || '').slice(0, 200);
-      const searchText = `${movie.title} ${(movie.genres || []).join(' ')} ${overview}`;
-
-      const result = await client.search({
-        index: 'movies',
-        body: {
-          query: {
-            bool: {
-              should: [
-                {
-                  text_expansion: {
-                    'overview_embedding': {
-                      model_id: '.elser_model_2',
-                      model_text: searchText,
-                      boost: 2
-                    }
-                  }
-                },
-                {
-                  text_expansion: {
-                    'title_embedding': {
-                      model_id: '.elser_model_2',
-                      model_text: movie.title,
-                      boost: 1
-                    }
-                  }
+    const result = await client.search({
+      index: 'movies',
+      body: {
+        query: {
+          bool: {
+            must: [
+              {
+                more_like_this: {
+                  fields: ['title', 'overview', 'genres', 'keywords'],
+                  like: [{ _index: 'movies', _id: movieId }],
+                  min_term_freq: 1,
+                  min_doc_freq: 2,
+                  max_query_terms: 25
                 }
-              ],
-              must_not: [
-                { ids: { values: [movieId] } }
-              ]
-            }
-          },
-          size: limit,
-          _source: {
-            excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
+              }
+            ],
+            must_not: [
+              { ids: { values: [movieId] } }
+            ]
           }
+        },
+        size: limit,
+        _source: {
+          excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
         }
-      }, { requestTimeout: 60_000 });
+      }
+    });
 
-      const body = getBody(result);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return body.hits.hits.map((hit: any) => ({
-        id: hit._id,
-        ...hit._source,
-        _score: hit._score,
-      }));
-    } else {
-      // Fallback: use more_like_this query
-      return await getSimilarMoviesMLT(movieId, limit);
-    }
+    const body = getBody(result);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return body.hits.hits.map((hit: any) => ({
+      id: hit._id,
+      ...hit._source,
+      _score: hit._score,
+    }));
   } catch (error) {
     console.error(`Failed to get similar movies for ${movieId}:`, error);
-    // If ELSER failed (e.g. queue full during ingestion), fall back to more_like_this
-    console.log('Falling back to more_like_this for similar movies');
-    try {
-      return await getSimilarMoviesMLT(movieId, limit);
-    } catch {
-      return [];
-    }
+    return [];
   }
-}
-
-// ─── Similar movies fallback using more_like_this ───────────────────
-
-async function getSimilarMoviesMLT(movieId: string, limit: number): Promise<Movie[]> {
-  const result = await client.search({
-    index: 'movies',
-    body: {
-      query: {
-        bool: {
-          must: [
-            {
-              more_like_this: {
-                fields: ['title', 'overview', 'genres', 'keywords'],
-                like: [{ _index: 'movies', _id: movieId }],
-                min_term_freq: 1,
-                min_doc_freq: 2,
-                max_query_terms: 25
-              }
-            }
-          ],
-          must_not: [
-            { ids: { values: [movieId] } }
-          ]
-        }
-      },
-      size: limit,
-      _source: {
-        excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
-      }
-    }
-  });
-
-  const body = getBody(result);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return body.hits.hits.map((hit: any) => ({
-    id: hit._id,
-    ...hit._source,
-    _score: hit._score,
-  }));
 }
 
 // ─── Get all genres with counts ─────────────────────────────────────
@@ -591,7 +367,6 @@ export async function indexMovie(movie: Omit<Movie, 'id' | '_score'>): Promise<{
       id,
       body: movie,
       refresh: false as const,
-      pipeline: 'elser-ingest'
     });
 
     const body = getBody(result);
@@ -608,16 +383,21 @@ export async function getHealthInfo() {
   const info: Record<string, unknown> = {
     status: 'ok',
     engine: useOpenSearch ? 'opensearch' : 'elasticsearch',
-    elserAvailable: false,
   };
 
   try {
     await client.ping();
     info.status = 'ok';
-    info.elserAvailable = await checkElserAvailable();
   } catch {
     info.status = 'error';
   }
 
   return info;
+}
+
+// ─── Cluster info from "/" endpoint ─────────────────────────────────
+
+export async function getClusterInfo() {
+  const result = await client.info();
+  return getBody(result);
 }

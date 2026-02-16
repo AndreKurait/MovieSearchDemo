@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Movie Search",
-  description: "Discover movies with AI-powered semantic search",
+  description: "Discover and search movies",
 };
 
 // Inline script to set theme before paint to prevent flash
