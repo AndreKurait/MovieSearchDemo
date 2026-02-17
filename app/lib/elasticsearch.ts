@@ -199,7 +199,8 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
             functions: [
               { field_value_factor: { field: 'popularity', modifier: 'log1p', missing: 1 }, weight: 1 },
               { field_value_factor: { field: 'vote_average', modifier: 'none', missing: 5 }, weight: 0.5 },
-              { field_value_factor: { field: 'vote_count', modifier: 'log2p', missing: 1 }, weight: 0.3 }
+              { field_value_factor: { field: 'vote_count', modifier: 'log2p', missing: 1 }, weight: 0.3 },
+              { gauss: { release_date: { origin: 'now', scale: '365d', decay: 0.5 } }, weight: 2 }
             ],
             score_mode: 'sum',
             boost_mode: 'replace'
