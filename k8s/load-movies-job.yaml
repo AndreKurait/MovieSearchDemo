@@ -90,7 +90,8 @@ spec:
                       "poster_path": d.get("poster_path",""), "backdrop_path": d.get("backdrop_path",""),
                       "original_language": d.get("original_language",""), "tagline": d.get("tagline",""),
                       "keywords": [k["name"] for k in d.get("keywords",{}).get("keywords",[])],
-                      "cast": [{"name":c["name"],"character":c.get("character",""),"order":c.get("order",0)}
+                      "cast": [{"name":c["name"],"character":c.get("character",""),"order":c.get("order",0),
+                               "profile_path":c.get("profile_path","")}
                                for c in d.get("credits",{}).get("cast",[])[:10]],
                       "director": next((c["name"] for c in d.get("credits",{}).get("crew",[])
                                         if c.get("job")=="Director"), ""),
