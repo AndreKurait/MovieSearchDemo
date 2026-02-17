@@ -6,8 +6,8 @@ metadata:
 spec:
   ttlSecondsAfterFinished: 3600
   backoffLimit: 6
-  completions: 3
-  parallelism: 3
+  completions: 10
+  parallelism: 10
   completionMode: Indexed
   template:
     spec:
@@ -39,7 +39,7 @@ spec:
           THREADS = int(os.environ.get("THREADS", "2"))
           THROTTLE_MS = int(os.environ.get("THROTTLE_SLEEP_MS", "50"))
           WORKER = int(os.environ.get("JOB_COMPLETION_INDEX", "0"))
-          COMPLETIONS = int(os.environ.get("JOB_COMPLETIONS", "3"))
+          COMPLETIONS = int(os.environ.get("JOB_COMPLETIONS", "10"))
           INDEX = "application-logs"
 
           SERVICES = ["api-gateway", "movie-service", "user-service", "search-service",
