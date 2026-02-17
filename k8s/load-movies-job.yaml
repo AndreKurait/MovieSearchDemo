@@ -18,6 +18,8 @@ spec:
             secretKeyRef:
               name: tmdb-api-key
               key: api-key
+        - name: MAX_MOVIES
+          value: "100000"
         - name: ES_URL
           value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
         command: ["python", "-u", "-c"]
@@ -28,6 +30,7 @@ spec:
 
           ES = os.environ["ES_URL"]
           KEY = os.environ["TMDB_API_KEY"]
+          MAX_MOVIES = int(os.environ.get("MAX_MOVIES", "100000"))
           WORKERS = 40
           BATCH = 100
 
@@ -127,8 +130,8 @@ spec:
               sys.exit("Could not download TMDB export")
 
           all_movies = [json.loads(l) for l in data.strip().split("\n")]
-          ids = [m["id"] for m in sorted(all_movies, key=lambda x: -x.get("popularity",0)) if m.get("popularity",0) > 0]
-          print(f"Found {len(ids)} popular movies, loading all...\n")
+          ids = [m["id"] for m in sorted(all_movies, key=lambda x: -x.get("popularity",0)) if m.get("popularity",0) > 0][:MAX_MOVIES]
+          print(f"Found {len(ids)} popular movies (max {MAX_MOVIES}), loading all...\n")
 
           loaded = failed = 0
           t0 = time.time()
