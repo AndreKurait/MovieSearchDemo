@@ -107,14 +107,14 @@ spec:
         - name: xpack.ml.max_machine_memory_percent
           value: "60"
         - name: ES_JAVA_OPTS
-          value: "-Xms8g -Xmx8g"
+          value: "-Xms29g -Xmx29g"
         resources:
           requests:
-            cpu: "8"
-            memory: 16Gi
+            cpu: "30"
+            memory: 58Gi
           limits:
-            cpu: "16"
-            memory: 20Gi
+            cpu: "30"
+            memory: 58Gi
         readinessProbe:
           httpGet:
             path: /_cluster/health?local=true
