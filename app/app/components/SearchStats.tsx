@@ -11,12 +11,9 @@ export default function SearchStats() {
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm text-text-secondary">
       {total > 0 && (
-        <>
-          <span>
-            <strong className="text-text-primary">{total.toLocaleString()}</strong> results
-          </span>
-          <span className="text-text-tertiary">in {latency}ms</span>
-        </>
+        <span>
+          <strong className="text-text-primary">{total.toLocaleString()}</strong> results
+        </span>
       )}
     </div>
   );
