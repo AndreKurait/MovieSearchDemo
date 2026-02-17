@@ -98,96 +98,61 @@ function buildKeywordQuery(query: string) {
       query: {
         bool: {
           should: [
-            // Primary: best_fields across all searchable text fields
             {
               multi_match: {
                 query,
                 fields: [
-                  'title^3', 'title.raw^4', 'tagline^1.5', 'overview',
-                  'genres^2', 'keywords.text^3',
-                  'cast.name^5', 'crew.name^5'
+                  'title^3', 'title.keyword^4', 'tagline^1.5', 'overview',
+                  'cast.name^3', 'director^3'
                 ],
                 type: 'best_fields',
                 fuzziness: 'AUTO'
               }
             },
-            // Cross-fields for multi-word queries spanning different fields
             {
               multi_match: {
                 query,
-                fields: [
-                  'title^2', 'overview', 'keywords.text^2',
-                  'cast.name^4', 'crew.name^4'
-                ],
+                fields: ['title^2', 'overview', 'cast.name^3', 'director^3'],
                 type: 'cross_fields'
               }
             },
-            // Exact phrase matches get high boosts
-            {
-              match_phrase: {
-                title: {
-                  query,
-                  boost: 10
-                }
-              }
-            },
-            {
-              match_phrase: {
-                'cast.name': {
-                  query,
-                  boost: 10
-                }
-              }
-            },
-            {
-              match_phrase: {
-                'crew.name': {
-                  query,
-                  boost: 10
-                }
-              }
-            },
-            {
-              match_phrase: {
-                'keywords.text': {
-                  query,
-                  boost: 8
-                }
-              }
-            },
-            {
-              match_phrase: {
-                overview: {
-                  query,
-                  slop: 2,
-                  boost: 3
-                }
-              }
-            }
+            // Exact matches on keyword fields (genres, keywords)
+            { term: { genres: { value: query, boost: 4 } } },
+            { term: { keywords: { value: query.toLowerCase(), boost: 3 } } },
+            // Phrase matches
+            { match_phrase: { title: { query, boost: 8 } } },
+            { match_phrase: { 'cast.name': { query, boost: 6 } } },
+            { match_phrase: { overview: { query, slop: 2, boost: 2 } } }
           ]
         }
       },
-      // Popularity boost: multiplicative so it gently re-ranks
-      // rather than overwhelming text relevance
       functions: [
         {
           field_value_factor: {
             field: 'vote_count',
-            factor: 1.0,
             modifier: 'log2p',
             missing: 1
           },
-          weight: 0.5
+          weight: 0.4
         },
         {
           field_value_factor: {
             field: 'vote_average',
-            factor: 1.0,
             modifier: 'none',
             missing: 5
           },
           weight: 0.1
         },
+        {
+          gauss: {
+            release_date: {
+              origin: 'now',
+              scale: '1825d',
+              decay: 0.5
+            }
+          },
+          weight: 0.2
+        }
       ],
       score_mode: 'sum',
       boost_mode: 'multiply'
@@ -228,7 +193,18 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
     const result = await client.search({
       index: 'movies',
       body: {
-        query: query.trim() ? buildKeywordQuery(query) : { match_all: {} },
+        query: query.trim() ? buildKeywordQuery(query) : {
+          function_score: {
+            query: { match_all: {} },
+            functions: [
+              { field_value_factor: { field: 'popularity', modifier: 'log1p', missing: 1 }, weight: 1 },
+              { field_value_factor: { field: 'vote_average', modifier: 'none', missing: 5 }, weight: 0.5 },
+              { field_value_factor: { field: 'vote_count', modifier: 'log2p', missing: 1 }, weight: 0.3 }
+            ],
+            score_mode: 'sum',
+            boost_mode: 'replace'
+          }
+        },
         ...(filters.length > 0 ? { post_filter: { bool: { must: filters } } } : {}),
         from,
         size: pageSize,
@@ -241,7 +217,7 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
             terms: { field: 'genres', size: 30 }
           }
         },
-        ...(!query.trim() ? { sort: [{ popularity: 'desc' }] } : {})
+        ...(!query.trim() ? {} : {})
       }
     });
 
