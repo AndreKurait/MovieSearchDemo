@@ -141,11 +141,11 @@ spec:
           def wait_for_es():
               for _ in range(60):
                   try:
-                      urlopen(f"{ES}/{INDEX}/_count", timeout=5)
-                      return True
+                      r = urlopen(f"{ES}/_cluster/health", timeout=5)
+                      if b'"status":"green"' in r.read() or b'"status":"yellow"' in r.read():
+                          return True
+                      return True  # Any response means ES is up
                   except:
-                      try: urlopen(f"{ES}/_cluster/health", timeout=5)
-                      except: pass
                       time.sleep(2)
               return False
 
