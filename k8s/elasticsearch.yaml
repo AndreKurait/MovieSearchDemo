@@ -82,12 +82,27 @@ spec:
       containers:
       - name: elasticsearch
         image: docker.elastic.co/elasticsearch/elasticsearch:8.19.11
+        command:
+        - bash
+        - -c
+        - |
+          # Symlink EKS Pod Identity token to path allowed by repository-s3 entitlement policy
+          if [ -f /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token ]; then
+            mkdir -p /usr/share/elasticsearch/config/repository-s3
+            ln -sf /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token \
+              /usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file
+          fi
+          exec /usr/local/bin/docker-entrypoint.sh eswrapper
         ports:
         - containerPort: 9200
           name: http
         - containerPort: 9300
           name: transport
         env:
+        - name: AWS_CONTAINER_CREDENTIALS_FULL_URI
+          value: "http://169.254.170.23/v1/credentials"
+        - name: AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE
+          value: "/usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file"
         - name: node.name
           valueFrom:
             fieldRef:
