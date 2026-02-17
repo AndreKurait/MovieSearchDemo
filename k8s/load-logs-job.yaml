@@ -1,0 +1,259 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-app-logs
+  namespace: movie-demo
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 2
+  completions: 10
+  parallelism: 10
+  completionMode: Indexed
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: log-generator
+        image: python:3.11-slim
+        env:
+        - name: ES_URL
+          value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        - name: TARGET_GB_PER_POD
+          value: "100"
+        - name: BATCH_SIZE
+          value: "5000"
+        - name: THREADS
+          value: "4"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, json, time, random, hashlib, sys, string
+          from concurrent.futures import ThreadPoolExecutor
+          from urllib.request import Request, urlopen
+          from urllib.error import URLError
+          from datetime import datetime, timedelta
+
+          ES = os.environ["ES_URL"]
+          TARGET_BYTES = int(os.environ.get("TARGET_GB_PER_POD", "100")) * 1_000_000_000
+          BATCH = int(os.environ.get("BATCH_SIZE", "5000"))
+          THREADS = int(os.environ.get("THREADS", "4"))
+          WORKER = int(os.environ.get("JOB_COMPLETION_INDEX", "0"))
+          INDEX = "application-logs"
+
+          SERVICES = ["api-gateway", "movie-service", "user-service", "search-service",
+                      "recommendation-engine", "auth-service", "streaming-service",
+                      "payment-service", "notification-service", "cdn-edge"]
+          LEVELS = ["INFO"] * 70 + ["WARN"] * 15 + ["ERROR"] * 10 + ["DEBUG"] * 5
+          METHODS = ["GET"] * 60 + ["POST"] * 25 + ["PUT"] * 10 + ["DELETE"] * 5
+          PATHS = [
+              "/api/v1/movies", "/api/v1/movies/{id}", "/api/v1/search",
+              "/api/v1/users/{id}/profile", "/api/v1/users/{id}/watchlist",
+              "/api/v1/stream/{id}/start", "/api/v1/stream/{id}/heartbeat",
+              "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
+              "/api/v1/recommendations/{id}", "/api/v1/movies/{id}/reviews",
+              "/api/v1/payments/subscribe", "/api/v1/notifications/preferences",
+              "/api/v1/movies/{id}/similar", "/api/v1/genres", "/api/v1/trending",
+              "/health", "/metrics", "/api/v1/users/{id}/history",
+          ]
+          STATUS_CODES = [200] * 75 + [201] * 5 + [204] * 3 + [301] * 2 + \
+                         [400] * 5 + [401] * 3 + [403] * 2 + [404] * 3 + [500] * 2
+          MESSAGES = {
+              "INFO": [
+                  "Request completed successfully",
+                  "Cache hit for resource",
+                  "User session validated",
+                  "Stream chunk delivered",
+                  "Search query executed in {ms}ms",
+                  "Database query returned {n} results",
+                  "Rate limit check passed",
+                  "JWT token validated",
+                  "CDN cache populated",
+                  "Recommendation model scored {n} candidates",
+              ],
+              "WARN": [
+                  "Slow query detected: {ms}ms",
+                  "Rate limit approaching threshold",
+                  "Connection pool utilization at {pct}%",
+                  "Retry attempt {n} for upstream service",
+                  "Cache miss, falling back to database",
+                  "Deprecated API version called",
+                  "High memory utilization detected",
+              ],
+              "ERROR": [
+                  "Upstream service timeout after {ms}ms",
+                  "Database connection failed",
+                  "Authentication token expired",
+                  "Internal server error: null pointer exception",
+                  "Circuit breaker opened for {svc}",
+                  "Failed to process payment transaction",
+                  "Stream buffer overflow",
+              ],
+              "DEBUG": [
+                  "Entering request handler",
+                  "SQL: SELECT * FROM movies WHERE id = {n}",
+                  "Redis GET key=session:{rid}",
+                  "HTTP client pool stats: active={n}, idle={n2}",
+                  "Request headers parsed",
+              ],
+          }
+          AGENTS = [
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)",
+              "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36",
+              "MovieApp/3.2.1 (iOS 17.0)", "MovieApp/3.2.0 (Android 14)",
+              "python-requests/2.31.0", "curl/8.4.0",
+          ]
+
+          # Deterministic seed per worker for reproducible but unique data
+          rng = random.Random(42 + WORKER)
+          # Base timestamp: spread 90 days of logs across workers
+          base_ts = datetime(2025, 11, 1) + timedelta(days=WORKER * 9)
+
+          def make_log(seq):
+              ts = base_ts + timedelta(milliseconds=seq * rng.randint(5, 50))
+              level = rng.choice(LEVELS)
+              svc = rng.choice(SERVICES)
+              method = rng.choice(METHODS)
+              path = rng.choice(PATHS).replace("{id}", str(rng.randint(1, 100000)))
+              status = rng.choice(STATUS_CODES)
+              rt = rng.randint(1, 200) if status < 400 else rng.randint(200, 5000)
+              msg = rng.choice(MESSAGES[level])
+              msg = msg.replace("{ms}", str(rt)).replace("{n}", str(rng.randint(1, 1000)))
+              msg = msg.replace("{pct}", str(rng.randint(70, 99)))
+              msg = msg.replace("{svc}", rng.choice(SERVICES))
+              msg = msg.replace("{rid}", hashlib.md5(str(seq).encode()).hexdigest()[:12])
+              msg = msg.replace("{n2}", str(rng.randint(1, 50)))
+              uid = f"user-{rng.randint(1, 500000)}"
+              rid = f"{WORKER:02d}-{seq:012d}"
+              ip = f"{rng.randint(10,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
+              return {
+                  "@timestamp": ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{rng.randint(0,999):03d}Z",
+                  "level": level, "service": svc, "message": msg,
+                  "request_id": rid, "user_id": uid,
+                  "http": {"method": method, "path": path, "status_code": status,
+                           "response_time_ms": rt},
+                  "client": {"ip": ip, "user_agent": rng.choice(AGENTS)},
+                  "host": f"{svc}-{rng.randint(0,5)}.movie-demo.svc.cluster.local",
+                  "trace_id": hashlib.sha256(rid.encode()).hexdigest()[:32],
+              }
+
+          def wait_for_es():
+              for _ in range(60):
+                  try:
+                      urlopen(f"{ES}/{INDEX}/_count", timeout=5)
+                      return True
+                  except:
+                      try: urlopen(f"{ES}/_cluster/health", timeout=5)
+                      except: pass
+                      time.sleep(2)
+              return False
+
+          def create_index():
+              body = json.dumps({
+                  "settings": {"number_of_shards": 6, "number_of_replicas": 0,
+                               "refresh_interval": "30s",
+                               "translog.durability": "async",
+                               "translog.sync_interval": "30s"},
+                  "mappings": {"properties": {
+                      "@timestamp": {"type": "date"},
+                      "level": {"type": "keyword"},
+                      "service": {"type": "keyword"},
+                      "message": {"type": "text"},
+                      "request_id": {"type": "keyword"},
+                      "user_id": {"type": "keyword"},
+                      "http": {"properties": {
+                          "method": {"type": "keyword"},
+                          "path": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                          "status_code": {"type": "integer"},
+                          "response_time_ms": {"type": "integer"}}},
+                      "client": {"properties": {
+                          "ip": {"type": "ip"},
+                          "user_agent": {"type": "text"}}},
+                      "host": {"type": "keyword"},
+                      "trace_id": {"type": "keyword"},
+                  }}
+              }).encode()
+              try:
+                  req = Request(f"{ES}/{INDEX}", data=body, method="PUT",
+                                headers={"Content-Type": "application/json"})
+                  urlopen(req, timeout=30)
+                  print(f"Created index '{INDEX}'")
+              except Exception as e:
+                  if "resource_already_exists" in str(e).lower() or "400" in str(e):
+                      print(f"Index '{INDEX}' already exists")
+                  else:
+                      print(f"Index creation: {e}")
+
+          def bulk_send(docs):
+              body = ""
+              for d in docs:
+                  body += '{"index":{}}\n' + json.dumps(d, separators=(',', ':')) + "\n"
+              data = body.encode()
+              for attempt in range(3):
+                  try:
+                      req = Request(f"{ES}/{INDEX}/_bulk", data=data, method="POST",
+                                    headers={"Content-Type": "application/json"})
+                      resp = urlopen(req, timeout=120)
+                      result = json.loads(resp.read())
+                      if result.get("errors"):
+                          errs = sum(1 for i in result["items"] if i["index"].get("error"))
+                          return len(docs) - errs, len(data)
+                      return len(docs), len(data)
+                  except Exception as e:
+                      if attempt == 2:
+                          print(f"  Bulk failed: {e}")
+                          return 0, 0
+                      time.sleep(2 ** attempt)
+              return 0, 0
+
+          # --- Main ---
+          print(f"=== Log Generator Worker {WORKER}/10 ===")
+          print(f"Target: {TARGET_BYTES / 1e9:.0f} GB per pod ({TARGET_BYTES / 1e9 * 10:.0f} GB total)")
+
+          print("Waiting for Elasticsearch...")
+          if not wait_for_es():
+              # Try creating the index if it doesn't exist yet
+              pass
+
+          if WORKER == 0:
+              create_index()
+              time.sleep(3)  # Let index creation propagate
+
+          time.sleep(WORKER * 2)  # Stagger pod starts
+
+          total_docs = 0
+          total_bytes = 0
+          seq = 0
+          start = time.time()
+
+          while total_bytes < TARGET_BYTES:
+              batch = [make_log(seq + i) for i in range(BATCH)]
+              seq += BATCH
+              indexed, nbytes = bulk_send(batch)
+              total_docs += indexed
+              total_bytes += nbytes
+
+              if seq % (BATCH * 20) == 0:
+                  elapsed = time.time() - start
+                  gb = total_bytes / 1e9
+                  rate = total_docs / elapsed if elapsed > 0 else 0
+                  pct = total_bytes / TARGET_BYTES * 100
+                  print(f"Worker {WORKER}: {gb:.1f} GB sent ({pct:.1f}%), "
+                        f"{total_docs:,} docs, {rate:,.0f} docs/s")
+
+              if indexed == 0:
+                  print(f"Worker {WORKER}: Bulk insert returned 0, pausing...")
+                  time.sleep(10)
+
+          elapsed = time.time() - start
+          print(f"\n=== Worker {WORKER} Complete ===")
+          print(f"Sent {total_bytes / 1e9:.1f} GB, {total_docs:,} docs in {elapsed:.0f}s")
+          print(f"Rate: {total_docs / elapsed:,.0f} docs/s")
+        resources:
+          requests:
+            cpu: "1"
+            memory: 512Mi
+          limits:
+            cpu: "2"
+            memory: 1Gi
