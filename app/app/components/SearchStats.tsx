@@ -3,7 +3,7 @@
 import { useSearchContext } from '@/app/context/SearchContext';
 
 export default function SearchStats() {
-  const { total, latency, loading, query, movies } = useSearchContext();
+  const { total, loading, query, movies } = useSearchContext();
 
   if (loading && movies.length === 0) return null;
   if (!query && movies.length === 0) return null;
