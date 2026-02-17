@@ -1,0 +1,241 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-movies-synthetic
+  namespace: movie-demo
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loader
+        image: python:3.11-slim
+        env:
+        - name: ES_URL
+          value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        - name: INDEX_NAME
+          value: "movies"
+        - name: NUM_MOVIES
+          value: "10000"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, json, urllib.request, time, random, hashlib, sys
+
+          ES_URL = os.environ["ES_URL"]
+          INDEX = os.environ.get("INDEX_NAME", "movies")
+          NUM = int(os.environ.get("NUM_MOVIES", "10000"))
+          BATCH = 500
+
+          def wait_for_es():
+              for i in range(60):
+                  try:
+                      req = urllib.request.Request(f"{ES_URL}/_cluster/health?wait_for_status=yellow&timeout=5s")
+                      urllib.request.urlopen(req, timeout=10)
+                      return True
+                  except:
+                      time.sleep(2)
+              return False
+
+          def create_index():
+              mapping = json.dumps({
+                  "settings": {"number_of_shards": 1, "number_of_replicas": 0,
+                      "analysis": {"analyzer": {
+                          "autocomplete": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase", "edge_ngram_filter"]},
+                          "autocomplete_search": {"type": "custom", "tokenizer": "standard", "filter": ["lowercase"]}
+                      }, "filter": {"edge_ngram_filter": {"type": "edge_ngram", "min_gram": 2, "max_gram": 15}}}},
+                  "mappings": {"properties": {
+                      "title": {"type": "text", "analyzer": "english", "fields": {
+                          "keyword": {"type": "keyword"}, "raw": {"type": "text", "analyzer": "standard"},
+                          "autocomplete": {"type": "text", "analyzer": "autocomplete", "search_analyzer": "autocomplete_search"}}},
+                      "tagline": {"type": "text", "analyzer": "english"},
+                      "overview": {"type": "text", "analyzer": "english"},
+                      "genres": {"type": "keyword"},
+                      "release_date": {"type": "date", "ignore_malformed": True},
+                      "vote_average": {"type": "float"},
+                      "vote_count": {"type": "integer"},
+                      "popularity": {"type": "float"},
+                      "poster_path": {"type": "keyword"},
+                      "backdrop_path": {"type": "keyword"},
+                      "runtime": {"type": "integer"},
+                      "original_language": {"type": "keyword"},
+                      "cast": {"type": "nested", "properties": {
+                          "name": {"type": "text"}, "character": {"type": "text"}, "profile_path": {"type": "keyword"}}},
+                      "crew": {"type": "nested", "properties": {
+                          "name": {"type": "text"}, "job": {"type": "keyword"}}},
+                      "keywords": {"type": "keyword"}
+                  }}
+              }).encode()
+              try:
+                  req = urllib.request.Request(f"{ES_URL}/{INDEX}", data=mapping, method="PUT",
+                      headers={"Content-Type": "application/json"})
+                  urllib.request.urlopen(req)
+                  print(f"Created index '{INDEX}'")
+              except Exception as e:
+                  if "already_exists" in str(e):
+                      print(f"Index '{INDEX}' already exists, deleting and recreating...")
+                      urllib.request.urlopen(urllib.request.Request(f"{ES_URL}/{INDEX}", method="DELETE"))
+                      urllib.request.urlopen(urllib.request.Request(f"{ES_URL}/{INDEX}", data=mapping, method="PUT",
+                          headers={"Content-Type": "application/json"}))
+                      print(f"Recreated index '{INDEX}'")
+                  else:
+                      raise
+
+          # --- Movie generation data ---
+          ADJECTIVES = ["Dark", "Lost", "Last", "Final", "Silent", "Broken", "Hidden", "Eternal", "Crimson",
+              "Golden", "Midnight", "Shadow", "Iron", "Silver", "Frozen", "Burning", "Fallen", "Rising",
+              "Secret", "Wild", "Savage", "Deadly", "Ancient", "Forgotten", "Cursed", "Sacred", "Twisted",
+              "Shattered", "Hollow", "Wicked", "Brave", "Rogue", "Phantom", "Mystic", "Fading", "Blazing",
+              "Distant", "Lonely", "Bitter", "Fierce", "Gentle", "Ruthless", "Noble", "Restless", "Vengeful"]
+          NOUNS = ["Knight", "Storm", "Dream", "World", "Heart", "Road", "Fire", "Ocean", "Mountain",
+              "River", "Forest", "City", "Kingdom", "Empire", "Legend", "Horizon", "Destiny", "Journey",
+              "Warrior", "Hunter", "Ghost", "Wolf", "Dragon", "Phoenix", "Serpent", "Falcon", "Raven",
+              "Shadow", "Flame", "Thunder", "Blade", "Crown", "Throne", "Fortress", "Abyss", "Labyrinth",
+              "Requiem", "Odyssey", "Chronicle", "Prophecy", "Covenant", "Vendetta", "Conspiracy", "Paradox"]
+          TITLE_PATTERNS = ["{adj} {noun}", "The {adj} {noun}", "{noun} of the {adj}", "The {noun}",
+              "{adj} {noun}s", "Beyond the {noun}", "Return of the {noun}", "The Last {noun}",
+              "{noun}: {adj} Rising", "A {adj} {noun}", "Into the {noun}", "{noun} Falls"]
+          GENRES_LIST = ["Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary", "Drama",
+              "Family", "Fantasy", "History", "Horror", "Music", "Mystery", "Romance", "Science Fiction",
+              "Thriller", "War", "Western"]
+          FIRST_NAMES = ["James", "Emma", "Michael", "Olivia", "Robert", "Sophia", "David", "Isabella",
+              "Daniel", "Mia", "Chris", "Ava", "Tom", "Emily", "Ryan", "Sarah", "John", "Jessica",
+              "Mark", "Rachel", "Alex", "Natalie", "Sam", "Chloe", "Ben", "Lily", "Jake", "Zoe",
+              "Leo", "Grace", "Max", "Hannah", "Ethan", "Ella", "Lucas", "Aria", "Owen", "Luna"]
+          LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+              "Rodriguez", "Martinez", "Anderson", "Taylor", "Thomas", "Moore", "Jackson", "Martin",
+              "Lee", "Thompson", "White", "Harris", "Clark", "Lewis", "Robinson", "Walker", "Young",
+              "Allen", "King", "Wright", "Scott", "Green", "Baker", "Adams", "Nelson", "Hill", "Ramirez",
+              "Campbell", "Mitchell", "Roberts", "Carter", "Phillips", "Evans", "Turner", "Torres", "Parker"]
+          CHAR_NAMES = ["Detective", "Captain", "Dr.", "Agent", "Professor", "Commander", "Sergeant",
+              "Officer", "Chief", "Inspector", "General", "Colonel", "Private", "Corporal", "Lieutenant"]
+          LANGUAGES = ["en", "en", "en", "en", "en", "fr", "de", "es", "ja", "ko", "it", "pt", "zh", "hi", "ru"]
+          KEYWORDS_POOL = ["revenge", "love", "betrayal", "survival", "friendship", "war", "mystery",
+              "conspiracy", "redemption", "sacrifice", "power", "corruption", "justice", "freedom",
+              "family", "loss", "hope", "fear", "courage", "destiny", "time travel", "alien",
+              "robot", "zombie", "vampire", "heist", "prison", "chase", "undercover", "spy",
+              "martial arts", "sword", "magic", "prophecy", "quest", "treasure", "island", "space",
+              "dystopia", "apocalypse", "pandemic", "haunted", "serial killer", "kidnapping", "escape"]
+          TAGLINE_PATTERNS = [
+              "Some secrets are worth dying for.", "The truth will set you free... or destroy you.",
+              "Every hero has a dark side.", "In a world of lies, trust no one.",
+              "One chance. One moment. Everything changes.", "Fear is just the beginning.",
+              "The past never stays buried.", "Justice has a new face.",
+              "Not all battles are fought with weapons.", "Some doors should never be opened.",
+              "When hope fades, legends rise.", "The line between good and evil is thinner than you think.",
+              "Every ending is a new beginning.", "Courage is not the absence of fear.",
+              "In the darkest hour, a light will shine.", "The greatest adventure lies within.",
+              "Some stories are written in blood.", "Where there is power, there is resistance.",
+              "Love conquers all... or does it?", "The clock is ticking.",
+              "No one is safe.", "The hunt begins.", "Destiny awaits.",
+              "Beyond the edge of the world.", "They thought it was over. They were wrong."]
+
+          def seed_rng(i):
+              return random.Random(hashlib.md5(f"movie-{i}".encode()).hexdigest())
+
+          def gen_movie(i):
+              r = seed_rng(i)
+              pattern = r.choice(TITLE_PATTERNS)
+              title = pattern.format(adj=r.choice(ADJECTIVES), noun=r.choice(NOUNS))
+              if r.random() < 0.15:
+                  title += f" {r.randint(2,5)}"
+
+              genres = r.sample(GENRES_LIST, r.randint(1, 3))
+              year = r.randint(1970, 2025)
+              month = r.randint(1, 12)
+              day = r.randint(1, 28)
+
+              num_cast = r.randint(3, 5)
+              cast = [{"name": f"{r.choice(FIRST_NAMES)} {r.choice(LAST_NAMES)}",
+                       "character": f"{r.choice(CHAR_NAMES)} {r.choice(LAST_NAMES)}" if r.random() < 0.4
+                                    else f"{r.choice(FIRST_NAMES)} {r.choice(LAST_NAMES)}",
+                       "profile_path": None} for _ in range(num_cast)]
+              crew = [{"name": f"{r.choice(FIRST_NAMES)} {r.choice(LAST_NAMES)}", "job": "Director"}]
+              if r.random() < 0.6:
+                  crew.append({"name": f"{r.choice(FIRST_NAMES)} {r.choice(LAST_NAMES)}", "job": "Writer"})
+
+              keywords = r.sample(KEYWORDS_POOL, r.randint(2, 6))
+
+              overview_parts = [
+                  f"A {r.choice(['gripping', 'thrilling', 'heartwarming', 'intense', 'captivating', 'riveting', 'haunting', 'epic'])}",
+                  f"{r.choice(['tale', 'story', 'journey', 'adventure', 'saga', 'chronicle'])} of",
+                  f"{r.choice(['a lone', 'an unlikely', 'a determined', 'a fearless', 'a troubled', 'a brilliant'])}",
+                  f"{r.choice(['hero', 'detective', 'scientist', 'soldier', 'teacher', 'journalist', 'pilot', 'doctor', 'spy', 'outlaw'])} who must",
+                  f"{r.choice(['confront', 'overcome', 'unravel', 'survive', 'navigate', 'escape', 'expose', 'prevent'])}",
+                  f"{r.choice(['a deadly conspiracy', 'an ancient evil', 'a dangerous secret', 'impossible odds', 'a corrupt system', 'a hidden truth', 'a looming catastrophe'])}",
+                  f"in {r.choice(['a world', 'a city', 'a kingdom', 'a society', 'a land'])}",
+                  f"{r.choice(['on the brink of chaos', 'torn apart by war', 'ruled by fear', 'shrouded in mystery', 'facing extinction'])}.",
+                  f"With {r.choice(['time running out', 'enemies closing in', 'allies turning traitor', 'the stakes higher than ever'])}",
+                  f"and {r.choice(['nothing left to lose', 'everything on the line', 'the fate of millions at stake', 'a dark past catching up'])}",
+                  f", {r.choice(['they', 'our hero', 'the team'])} must {r.choice(['fight', 'race', 'struggle', 'band together'])}",
+                  f"to {r.choice(['save what matters most', 'uncover the truth', 'stop the unthinkable', 'find redemption', 'change the course of history'])}."
+              ]
+
+              return {
+                  "title": title,
+                  "tagline": r.choice(TAGLINE_PATTERNS),
+                  "overview": " ".join(overview_parts),
+                  "genres": genres,
+                  "release_date": f"{year}-{month:02d}-{day:02d}",
+                  "vote_average": round(r.uniform(3.0, 9.5), 1),
+                  "vote_count": r.randint(10, 50000),
+                  "popularity": round(r.uniform(1.0, 100.0), 1),
+                  "poster_path": None,
+                  "backdrop_path": None,
+                  "runtime": r.randint(75, 210),
+                  "original_language": r.choice(LANGUAGES),
+                  "cast": cast,
+                  "crew": crew,
+                  "keywords": keywords
+              }
+
+          def bulk_index(movies):
+              body = ""
+              for mid, m in movies:
+                  body += json.dumps({"index": {"_id": str(mid)}}) + "\n"
+                  body += json.dumps(m) + "\n"
+              req = urllib.request.Request(f"{ES_URL}/{INDEX}/_bulk", data=body.encode(),
+                  method="POST", headers={"Content-Type": "application/json"})
+              with urllib.request.urlopen(req, timeout=60) as resp:
+                  result = json.loads(resp.read())
+                  errors = sum(1 for item in result.get("items", []) if item.get("index", {}).get("error"))
+                  return len(movies) - errors
+
+          # Main
+          print(f"Loading {NUM} synthetic movies into {ES_URL}/{INDEX}")
+          if not wait_for_es():
+              print("ES not ready"); sys.exit(1)
+          print("ES is ready")
+
+          create_index()
+
+          loaded = 0
+          batch = []
+          t0 = time.time()
+          for i in range(1, NUM + 1):
+              batch.append((i, gen_movie(i)))
+              if len(batch) >= BATCH:
+                  n = bulk_index(batch)
+                  loaded += n
+                  print(f"  {loaded}/{NUM} indexed ({loaded/(time.time()-t0):.0f}/s)")
+                  batch = []
+          if batch:
+              loaded += bulk_index(batch)
+
+          elapsed = time.time() - t0
+          print(f"\nDone! {loaded} movies in {elapsed:.1f}s")
+
+          # Verify
+          time.sleep(1)
+          req = urllib.request.Request(f"{ES_URL}/{INDEX}/_count")
+          with urllib.request.urlopen(req) as r:
+              print(f"Index doc count: {json.loads(r.read())['count']}")
+        resources:
+          requests:
+            cpu: "1"
+            memory: 512Mi
+          limits:
+            cpu: "2"
+            memory: 1Gi
