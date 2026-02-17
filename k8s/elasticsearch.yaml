@@ -13,6 +13,7 @@ metadata:
 provisioner: ebs.csi.eks.amazonaws.com
 volumeBindingMode: WaitForFirstConsumer
 reclaimPolicy: Delete
+allowVolumeExpansion: true
 parameters:
   type: gp3
 ---
@@ -157,14 +158,14 @@ spec:
         - name: xpack.ml.max_machine_memory_percent
           value: "60"
         - name: ES_JAVA_OPTS
-          value: "-Xms4g -Xmx4g"
+          value: "-Xms8g -Xmx8g"
         resources:
           requests:
-            cpu: "4"
-            memory: 8Gi
-          limits:
             cpu: "8"
-            memory: 12Gi
+            memory: 16Gi
+          limits:
+            cpu: "16"
+            memory: 20Gi
         readinessProbe:
           httpGet:
             path: /_cluster/health?local=true
@@ -190,7 +191,7 @@ spec:
       accessModes: ["ReadWriteOnce"]
       resources:
         requests:
-          storage: 30Gi
+          storage: 500Gi
 ---
 # Client-facing service (load balances across all nodes)
 apiVersion: v1
