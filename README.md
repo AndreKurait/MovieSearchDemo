@@ -1,6 +1,6 @@
 # Movie Search Demo
 
-Movie search app on EKS Auto Mode with self-managed Elasticsearch, featuring keyword search with autocomplete. Includes synthetic data generators and Locust load testing.
+Movie search app on EKS Auto Mode with self-managed Elasticsearch, featuring keyword search with autocomplete and real TMDB movie data. Includes Locust load testing.
 
 ## Prerequisites
 
@@ -9,6 +9,7 @@ Movie search app on EKS Auto Mode with self-managed Elasticsearch, featuring key
 - AWS CLI v1.31+ or v2 (must output `client.authentication.k8s.io/v1beta1`)
 - Docker (with buildx for multi-arch builds)
 - kubectl v1.31+
+- [TMDB API key](https://www.themoviedb.org/settings/api) (free)
 
 ### AWS Credentials
 
@@ -28,6 +29,11 @@ make apply         # Deploy infrastructure (~15 min)
 make kubeconfig    # Configure kubectl
 make build         # Build & push Docker images (app + locust)
 make deploy        # Deploy to Kubernetes
+
+# Load real movie data (~70k movies from TMDB)
+export TMDB_API_KEY="your-key-here"
+make load-movies
+
 make port-forward  # Access at http://localhost:8080
 ```
 
@@ -37,7 +43,7 @@ make port-forward  # Access at http://localhost:8080
 - **Elasticsearch 8.19** — Self-managed on EKS with EBS gp3 storage, S3 snapshots via EKS Pod Identity
 - **Next.js 15** — Frontend with React 19, autocomplete search UI
 - **Locust** — Headless load testing on the cluster
-- **OpenTofu** — Infrastructure as code (VPC, EKS, ECR, OpenSearch Service domain)
+- **OpenTofu** — Infrastructure as code (VPC, EKS, ECR)
 
 ## Structure
 
@@ -50,10 +56,9 @@ make port-forward  # Access at http://localhost:8080
 │   ├── elasticsearch.yaml        # ES StatefulSet (3 nodes, 500Gi each)
 │   ├── app.yaml                  # App Deployment + Service
 │   ├── locust.yaml               # Locust load testing (headless)
-│   ├── load-movies-synthetic-job.yaml  # Generate 10k synthetic movies
+│   ├── load-movies-job.yaml      # Load real TMDB movies (~70k)
 │   ├── load-logs-job.yaml        # Generate ~1TB application logs
-│   ├── setup-elser-job.yaml      # ELSER model setup (semantic search)
-│   └── load-enriched-job.yaml    # TMDB enriched data with ELSER
+│   └── setup-elser-job.yaml      # ELSER model setup (semantic search)
 ├── locust/                       # Locust load testing
 │   ├── locustfile.py
 │   └── Dockerfile
@@ -85,16 +90,16 @@ make port-forward  # Access at http://localhost:8080
 ### Data Loading
 
 ```bash
-# Load 10k synthetic movies (no API key needed)
-kubectl delete job load-movies-synthetic -n movie-demo --ignore-not-found
-kubectl apply -f k8s/load-movies-synthetic-job.yaml
+# Load real TMDB movies (requires TMDB API key)
+export TMDB_API_KEY="your-key-here"
+make load-movies
 
 # Generate ~1TB of application logs (10 parallel workers)
 kubectl delete job load-app-logs -n movie-demo --ignore-not-found
 kubectl apply -f k8s/load-logs-job.yaml
 
 # Monitor progress
-kubectl logs -f job/load-movies-synthetic -n movie-demo
+kubectl logs -f job/load-movies -n movie-demo
 kubectl exec -n movie-demo elasticsearch-0 -c elasticsearch -- \
   curl -s 'http://localhost:9200/_cat/indices?v'
 ```
