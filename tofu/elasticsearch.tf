@@ -51,6 +51,33 @@ resource "aws_eks_pod_identity_association" "elasticsearch" {
   role_arn        = aws_iam_role.elasticsearch.arn
 }
 
+# App IAM role for OpenSearch Service access (SigV4)
+resource "aws_iam_role" "app" {
+  name               = "${var.name}-app"
+  assume_role_policy = data.aws_iam_policy_document.es_assume_role.json
+}
+
+resource "aws_iam_role_policy" "app_opensearch" {
+  name = "opensearch-access"
+  role = aws_iam_role.app.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["es:ESHttp*"]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_eks_pod_identity_association" "app" {
+  cluster_name    = module.eks.cluster_name
+  namespace       = var.name
+  service_account = "movie-demo-app"
+  role_arn        = aws_iam_role.app.arn
+}
+
 # S3 access for all buckets
 data "aws_iam_policy_document" "es_s3_access" {
   statement {

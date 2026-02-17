@@ -1,38 +1,59 @@
 import { Client as ElasticsearchClient } from '@elastic/elasticsearch';
 import { Client as OpenSearchClient } from '@opensearch-project/opensearch';
+import { AwsSigv4Signer } from '@opensearch-project/opensearch/aws';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 
 // Determine which client to use based on environment variable
 const useOpenSearch = process.env.USE_OPENSEARCH === 'true';
+const useAwsSigv4 = process.env.OPENSEARCH_AUTH === 'sigv4';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let client: any;
 
 if (useOpenSearch) {
-  client = new OpenSearchClient({
-    node: process.env.OPENSEARCH_URL ?? 'http://localhost:9200',
-    auth: {
-      username: process.env.OPENSEARCH_USERNAME ?? 'elastic',
-      password: process.env.OPENSEARCH_PASSWORD ?? ''
-    },
-    requestTimeout: 30_000,
-    maxRetries: 2,
-  });
+  if (useAwsSigv4) {
+    const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+    client = new OpenSearchClient({
+      ...AwsSigv4Signer({
+        region,
+        service: process.env.OPENSEARCH_SERVICE === 'aoss' ? 'aoss' : 'es',
+        getCredentials: () => fromNodeProviderChain()(),
+      }),
+      node: process.env.OPENSEARCH_URL ?? 'https://localhost:9200',
+      requestTimeout: 30_000,
+      maxRetries: 2,
+    });
+    console.log(`Using OpenSearch client with SigV4 (region=${region})`);
+  } else {
+    client = new OpenSearchClient({
+      node: process.env.OPENSEARCH_URL ?? 'http://localhost:9200',
+      ...(process.env.OPENSEARCH_USERNAME ? {
+        auth: {
+          username: process.env.OPENSEARCH_USERNAME,
+          password: process.env.OPENSEARCH_PASSWORD ?? ''
+        }
+      } : {}),
+      ssl: { rejectUnauthorized: false },
+      requestTimeout: 30_000,
+      maxRetries: 2,
+    });
+    console.log('Using OpenSearch client with basic auth');
+  }
 } else {
   client = new ElasticsearchClient({
     node: process.env.ELASTICSEARCH_URL ?? 'http://localhost:9200',
-    auth: {
-      username: process.env.ELASTICSEARCH_USERNAME ?? 'elastic',
-      password: process.env.ELASTICSEARCH_PASSWORD ?? ''
-    },
-    tls: {
-      rejectUnauthorized: false
-    },
+    ...(process.env.ELASTICSEARCH_USERNAME ? {
+      auth: {
+        username: process.env.ELASTICSEARCH_USERNAME,
+        password: process.env.ELASTICSEARCH_PASSWORD ?? ''
+      }
+    } : {}),
+    tls: { rejectUnauthorized: false },
     requestTimeout: 30_000,
     maxRetries: 2,
   });
+  console.log('Using Elasticsearch client');
 }
-
-console.log(`Using ${useOpenSearch ? 'OpenSearch' : 'Elasticsearch'} client`);
 
 // ─── Types ───────────────────────────────────────────────────────────
 

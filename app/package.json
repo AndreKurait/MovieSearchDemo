@@ -10,6 +10,7 @@
     "test:search": "npx tsx test-search-client.ts"
   },
   "dependencies": {
+    "@aws-sdk/credential-providers": "^3.992.0",
     "@elastic/elasticsearch": "^8.0.0",
     "@headlessui/react": "^2.2.9",
     "@opensearch-project/opensearch": "^3.5.1",

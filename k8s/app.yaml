@@ -13,6 +13,7 @@ spec:
       labels:
         app: movie-demo-app
     spec:
+      serviceAccountName: movie-demo-app
       containers:
       - name: app
         image: IMAGE_PLACEHOLDER  # Replace with: $(tofu output -raw ecr_repository_url):latest
@@ -21,6 +22,14 @@ spec:
         env:
         - name: ELASTICSEARCH_URL
           value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        - name: USE_OPENSEARCH
+          value: "false"
+        - name: OPENSEARCH_URL
+          value: ""
+        - name: OPENSEARCH_AUTH
+          value: ""
+        - name: AWS_REGION
+          value: "us-east-1"
         - name: NODE_ENV
           value: "production"
         - name: HOSTNAME
