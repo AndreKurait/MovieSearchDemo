@@ -1,6 +1,6 @@
 # Movie Search Demo
 
-Movie search app on EKS Auto Mode with self-managed Elasticsearch, featuring keyword search with autocomplete and real TMDB movie data. Includes Locust load testing.
+Movie search app on EKS Auto Mode with self-managed Elasticsearch or Amazon OpenSearch Service, featuring keyword search with autocomplete and real TMDB movie data. Includes Locust load testing.
 
 ## Prerequisites
 
@@ -50,7 +50,7 @@ make port-forward  # Access at http://localhost:8080
 ```
 ├── app/                          # Next.js application
 │   ├── app/                      # Pages, components, API routes
-│   ├── lib/elasticsearch.ts      # ES/OpenSearch client
+│   ├── lib/elasticsearch.ts      # ES/OpenSearch client (supports both)
 │   └── Dockerfile
 ├── k8s/                          # Kubernetes manifests
 │   ├── elasticsearch.yaml        # ES StatefulSet (3 nodes, 500Gi each)
@@ -114,17 +114,90 @@ Locust deploys automatically with `make deploy` — 50 concurrent users for 500 
 | `make locust-logs` | Stream locust output |
 | `make stop-locust` | Stop the load test |
 
-## Environment Variables
+## Search Engine Configuration
 
-The Next.js app uses these (see `app/.env.example`):
+The app supports three backends. Configure via environment variables in `k8s/app.yaml` or `app/.env.local`.
+
+### Self-managed Elasticsearch (default)
+
+No auth required for the in-cluster ES deployment.
+
+```yaml
+# k8s/app.yaml env vars (already configured)
+- name: ELASTICSEARCH_URL
+  value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+- name: USE_OPENSEARCH
+  value: "false"
+```
+
+### Amazon OpenSearch Service (SigV4)
+
+Uses IAM authentication via EKS Pod Identity — no passwords or keys to manage. The infrastructure (`make apply`) automatically creates:
+- A `movie-demo-app` service account with an IAM role
+- Pod identity association granting `es:ESHttp*` permissions
+- The app resolves credentials automatically via the AWS SDK credential chain
+
+To switch to an OpenSearch Service domain, update `k8s/app.yaml`:
+
+```yaml
+- name: USE_OPENSEARCH
+  value: "true"
+- name: OPENSEARCH_URL
+  value: "https://my-domain.us-east-1.es.amazonaws.com"
+- name: OPENSEARCH_AUTH
+  value: "sigv4"
+- name: AWS_REGION
+  value: "us-east-1"
+```
+
+Then redeploy: `make build && kubectl rollout restart deployment/movie-demo-app -n movie-demo`
+
+### OpenSearch Serverless (AOSS)
+
+Same as above, but set the service to `aoss`:
+
+```yaml
+- name: USE_OPENSEARCH
+  value: "true"
+- name: OPENSEARCH_URL
+  value: "https://collection-id.us-east-1.aoss.amazonaws.com"
+- name: OPENSEARCH_AUTH
+  value: "sigv4"
+- name: OPENSEARCH_SERVICE
+  value: "aoss"
+- name: AWS_REGION
+  value: "us-east-1"
+```
+
+### OpenSearch with Basic Auth
+
+For self-managed OpenSearch or clusters using username/password:
+
+```yaml
+- name: USE_OPENSEARCH
+  value: "true"
+- name: OPENSEARCH_URL
+  value: "https://my-opensearch:9200"
+- name: OPENSEARCH_USERNAME
+  value: "admin"
+- name: OPENSEARCH_PASSWORD
+  value: "admin"
+```
+
+## Environment Variables Reference
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `USE_OPENSEARCH` | `false` | Use OpenSearch client instead of Elasticsearch |
 | `ELASTICSEARCH_URL` | `http://localhost:9200` | Elasticsearch endpoint |
-| `USE_OPENSEARCH` | `false` | Switch to OpenSearch client |
+| `ELASTICSEARCH_USERNAME` | | Elasticsearch username (optional) |
+| `ELASTICSEARCH_PASSWORD` | | Elasticsearch password (optional) |
 | `OPENSEARCH_URL` | `http://localhost:9200` | OpenSearch endpoint |
-
-In Kubernetes, `ELASTICSEARCH_URL` is set to `http://elasticsearch.movie-demo.svc.cluster.local:9200`.
+| `OPENSEARCH_AUTH` | | Set to `sigv4` for IAM auth |
+| `OPENSEARCH_SERVICE` | `es` | `es` for managed OpenSearch, `aoss` for Serverless |
+| `OPENSEARCH_USERNAME` | | OpenSearch username (basic auth) |
+| `OPENSEARCH_PASSWORD` | | OpenSearch password (basic auth) |
+| `AWS_REGION` | `us-east-1` | AWS region for SigV4 signing |
 
 ## Local Development
 
