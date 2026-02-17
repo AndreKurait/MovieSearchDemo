@@ -6,8 +6,8 @@ metadata:
 spec:
   ttlSecondsAfterFinished: 3600
   backoffLimit: 6
-  completions: 10
-  parallelism: 10
+  completions: 3
+  parallelism: 3
   completionMode: Indexed
   template:
     spec:
@@ -18,26 +18,28 @@ spec:
         env:
         - name: ES_URL
           value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
-        - name: TARGET_GB_PER_POD
-          value: "100"
+        - name: TOTAL_TARGET_DOCS
+          value: "3430000000"
         - name: BATCH_SIZE
-          value: "5000"
+          value: "3000"
         - name: THREADS
-          value: "4"
+          value: "2"
+        - name: THROTTLE_SLEEP_MS
+          value: "50"
         command: ["python", "-u", "-c"]
         args:
         - |
-          import os, json, time, random, hashlib, sys, string
-          from concurrent.futures import ThreadPoolExecutor
+          import os, json, time, random, hashlib, sys
           from urllib.request import Request, urlopen
           from urllib.error import URLError
-          from datetime import datetime, timedelta
 
           ES = os.environ["ES_URL"]
-          TARGET_BYTES = int(os.environ.get("TARGET_GB_PER_POD", "100")) * 1_000_000_000
-          BATCH = int(os.environ.get("BATCH_SIZE", "5000"))
-          THREADS = int(os.environ.get("THREADS", "4"))
+          TOTAL_TARGET = int(os.environ.get("TOTAL_TARGET_DOCS", "3430000000"))
+          BATCH = int(os.environ.get("BATCH_SIZE", "3000"))
+          THREADS = int(os.environ.get("THREADS", "2"))
+          THROTTLE_MS = int(os.environ.get("THROTTLE_SLEEP_MS", "50"))
           WORKER = int(os.environ.get("JOB_COMPLETION_INDEX", "0"))
+          COMPLETIONS = int(os.environ.get("JOB_COMPLETIONS", "3"))
           INDEX = "application-logs"
 
           SERVICES = ["api-gateway", "movie-service", "user-service", "search-service",
@@ -59,38 +61,28 @@ spec:
                          [400] * 5 + [401] * 3 + [403] * 2 + [404] * 3 + [500] * 2
           MESSAGES = {
               "INFO": [
-                  "Request completed successfully",
-                  "Cache hit for resource",
-                  "User session validated",
-                  "Stream chunk delivered",
-                  "Search query executed in {ms}ms",
-                  "Database query returned {n} results",
-                  "Rate limit check passed",
-                  "JWT token validated",
-                  "CDN cache populated",
-                  "Recommendation model scored {n} candidates",
+                  "Request completed successfully", "Cache hit for resource",
+                  "User session validated", "Stream chunk delivered",
+                  "Search query executed in {ms}ms", "Database query returned {n} results",
+                  "Rate limit check passed", "JWT token validated",
+                  "CDN cache populated", "Recommendation model scored {n} candidates",
               ],
               "WARN": [
-                  "Slow query detected: {ms}ms",
-                  "Rate limit approaching threshold",
+                  "Slow query detected: {ms}ms", "Rate limit approaching threshold",
                   "Connection pool utilization at {pct}%",
                   "Retry attempt {n} for upstream service",
-                  "Cache miss, falling back to database",
-                  "Deprecated API version called",
+                  "Cache miss, falling back to database", "Deprecated API version called",
                   "High memory utilization detected",
               ],
               "ERROR": [
-                  "Upstream service timeout after {ms}ms",
-                  "Database connection failed",
+                  "Upstream service timeout after {ms}ms", "Database connection failed",
                   "Authentication token expired",
                   "Internal server error: null pointer exception",
                   "Circuit breaker opened for {svc}",
-                  "Failed to process payment transaction",
-                  "Stream buffer overflow",
+                  "Failed to process payment transaction", "Stream buffer overflow",
               ],
               "DEBUG": [
-                  "Entering request handler",
-                  "SQL: SELECT * FROM movies WHERE id = {n}",
+                  "Entering request handler", "SQL: SELECT * FROM movies WHERE id = {n}",
                   "Redis GET key=session:{rid}",
                   "HTTP client pool stats: active={n}, idle={n2}",
                   "Request headers parsed",
@@ -105,10 +97,9 @@ spec:
               "python-requests/2.31.0", "curl/8.4.0",
           ]
 
-          # Deterministic seed per worker for reproducible but unique data
           rng = random.Random(42 + WORKER)
-          # Base timestamp: spread 90 days of logs across workers
-          base_ts = datetime(2025, 11, 1) + timedelta(days=WORKER * 9)
+          from datetime import datetime, timedelta
+          base_ts = datetime(2025, 11, 1) + timedelta(days=WORKER * 30)
 
           def make_log(seq):
               ts = base_ts + timedelta(milliseconds=seq * rng.randint(5, 50))
@@ -153,6 +144,13 @@ spec:
                   time.sleep(2)
               print("ES not ready after 240s, proceeding anyway...")
               return False
+
+          def get_current_doc_count():
+              try:
+                  r = urlopen(f"{ES}/{INDEX}/_count", timeout=10)
+                  return json.loads(r.read()).get("count", 0)
+              except:
+                  return 0
 
           def create_index():
               body = json.dumps({
@@ -203,56 +201,73 @@ spec:
                       result = json.loads(resp.read())
                       if result.get("errors"):
                           errs = sum(1 for i in result["items"] if i["index"].get("error"))
-                          return len(docs) - errs, len(data)
-                      return len(docs), len(data)
+                          return len(docs) - errs
+                      return len(docs)
                   except Exception as e:
                       if attempt == 2:
                           print(f"  Bulk failed: {e}")
-                          return 0, 0
+                          return 0
                       time.sleep(2 ** attempt)
-              return 0, 0
+              return 0
 
           # --- Main ---
-          print(f"=== Log Generator Worker {WORKER}/10 ===")
-          print(f"Target: {TARGET_BYTES / 1e9:.0f} GB per pod ({TARGET_BYTES / 1e9 * 10:.0f} GB total)")
+          print(f"=== Log Generator Worker {WORKER}/{COMPLETIONS} ===")
+          print(f"Total target: {TOTAL_TARGET:,} docs across all workers")
+          print(f"Throttle: {THROTTLE_MS}ms between batches, batch size {BATCH}")
 
           print("Waiting for Elasticsearch...")
           wait_for_es()
 
           if WORKER == 0:
               create_index()
-              time.sleep(3)  # Let index creation propagate
+              time.sleep(3)
 
-          time.sleep(WORKER * 2)  # Stagger pod starts
+          time.sleep(WORKER * 2)
+
+          current = get_current_doc_count()
+          remaining = max(0, TOTAL_TARGET - current)
+          my_share = remaining // COMPLETIONS
+          # Last worker picks up remainder
+          if WORKER == COMPLETIONS - 1:
+              my_share = remaining - (remaining // COMPLETIONS) * (COMPLETIONS - 1)
+
+          print(f"Current docs: {current:,}, remaining: {remaining:,}, my share: {my_share:,}")
+
+          if my_share <= 0:
+              print("Target already reached, nothing to do.")
+              sys.exit(0)
 
           total_docs = 0
-          total_bytes = 0
-          seq = 0
+          seq = WORKER * 500_000_000  # Offset to avoid ID collisions with previous runs
           start = time.time()
+          throttle_s = THROTTLE_MS / 1000.0
 
-          while total_bytes < TARGET_BYTES:
-              batch = [make_log(seq + i) for i in range(BATCH)]
-              seq += BATCH
-              indexed, nbytes = bulk_send(batch)
+          while total_docs < my_share:
+              batch_size = min(BATCH, my_share - total_docs)
+              batch = [make_log(seq + i) for i in range(batch_size)]
+              seq += batch_size
+              indexed = bulk_send(batch)
               total_docs += indexed
-              total_bytes += nbytes
 
-              if seq % (BATCH * 20) == 0:
+              if throttle_s > 0:
+                  time.sleep(throttle_s)
+
+              if total_docs % (BATCH * 100) < BATCH:
                   elapsed = time.time() - start
-                  gb = total_bytes / 1e9
                   rate = total_docs / elapsed if elapsed > 0 else 0
-                  pct = total_bytes / TARGET_BYTES * 100
-                  print(f"Worker {WORKER}: {gb:.1f} GB sent ({pct:.1f}%), "
-                        f"{total_docs:,} docs, {rate:,.0f} docs/s")
+                  pct = total_docs / my_share * 100
+                  print(f"Worker {WORKER}: {total_docs:,}/{my_share:,} ({pct:.1f}%), "
+                        f"{rate:,.0f} docs/s")
 
               if indexed == 0:
-                  print(f"Worker {WORKER}: Bulk insert returned 0, pausing...")
-                  time.sleep(10)
+                  print(f"Worker {WORKER}: Bulk insert returned 0, pausing 30s...")
+                  time.sleep(30)
 
           elapsed = time.time() - start
+          final_count = get_current_doc_count()
           print(f"\n=== Worker {WORKER} Complete ===")
-          print(f"Sent {total_bytes / 1e9:.1f} GB, {total_docs:,} docs in {elapsed:.0f}s")
-          print(f"Rate: {total_docs / elapsed:,.0f} docs/s")
+          print(f"Indexed {total_docs:,} docs in {elapsed:.0f}s ({total_docs/elapsed:,.0f} docs/s)")
+          print(f"Total index doc count: {final_count:,}")
         resources:
           requests:
             cpu: "1"
