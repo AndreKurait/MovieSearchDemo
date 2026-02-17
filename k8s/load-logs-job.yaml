@@ -5,7 +5,7 @@ metadata:
   namespace: movie-demo
 spec:
   ttlSecondsAfterFinished: 3600
-  backoffLimit: 2
+  backoffLimit: 6
   completions: 10
   parallelism: 10
   completionMode: Indexed
@@ -139,14 +139,19 @@ spec:
               }
 
           def wait_for_es():
-              for _ in range(60):
+              for i in range(120):
                   try:
-                      r = urlopen(f"{ES}/_cluster/health", timeout=5)
-                      if b'"status":"green"' in r.read() or b'"status":"yellow"' in r.read():
+                      r = urlopen(f"{ES}/_cluster/health?wait_for_status=yellow&timeout=5s", timeout=10)
+                      body = r.read()
+                      if b'"timed_out":false' in body:
+                          print(f"ES ready after {i*2}s")
                           return True
-                      return True  # Any response means ES is up
-                  except:
-                      time.sleep(2)
+                      print(f"ES not ready yet (attempt {i})...")
+                  except Exception as e:
+                      if i % 10 == 0:
+                          print(f"Waiting for ES (attempt {i}): {e}")
+                  time.sleep(2)
+              print("ES not ready after 240s, proceeding anyway...")
               return False
 
           def create_index():
@@ -212,9 +217,7 @@ spec:
           print(f"Target: {TARGET_BYTES / 1e9:.0f} GB per pod ({TARGET_BYTES / 1e9 * 10:.0f} GB total)")
 
           print("Waiting for Elasticsearch...")
-          if not wait_for_es():
-              # Try creating the index if it doesn't exist yet
-              pass
+          wait_for_es()
 
           if WORKER == 0:
               create_index()
