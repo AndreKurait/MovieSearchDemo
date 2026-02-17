@@ -33,15 +33,13 @@ setup-elser:
 	kubectl wait --for=condition=complete job/setup-elser -n movie-demo --timeout=600s || \
 		(echo "Check progress: kubectl logs job/setup-elser -n movie-demo -f" && exit 1)
 
-# TMDB data loading (requires tmdb-api-key secret)
-create-tmdb-secret:
-	@if [ -z "$$TMDB_API_KEY" ]; then echo "Error: TMDB_API_KEY env var not set"; exit 1; fi
+# Load real TMDB movies (requires TMDB_API_KEY env var)
+load-movies:
+	@if [ -z "$$TMDB_API_KEY" ]; then echo "Error: Set TMDB_API_KEY first (free at https://www.themoviedb.org/settings/api)"; exit 1; fi
 	kubectl create secret generic tmdb-api-key --from-literal=api-key=$$TMDB_API_KEY -n movie-demo --dry-run=client -o yaml | kubectl apply -f -
-
-load-enriched: create-tmdb-secret
-	kubectl delete job load-enriched-movies -n movie-demo --ignore-not-found
-	kubectl apply -f k8s/load-enriched-job.yaml
-	@echo "Enriched load job started. Monitor: kubectl logs job/load-enriched-movies -n movie-demo -f"
+	kubectl delete job load-movies -n movie-demo --ignore-not-found
+	kubectl apply -f k8s/load-movies-job.yaml
+	@echo "Loading movies... Monitor: kubectl logs -f job/load-movies -n movie-demo"
 
 # Access
 port-forward:

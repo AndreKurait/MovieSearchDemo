@@ -1,0 +1,165 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: load-movies
+  namespace: movie-demo
+spec:
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: loader
+        image: python:3.11-slim
+        env:
+        - name: TMDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: tmdb-api-key
+              key: api-key
+        - name: ES_URL
+          value: "http://elasticsearch.movie-demo.svc.cluster.local:9200"
+        command: ["python", "-u", "-c"]
+        args:
+        - |
+          import os, json, gzip, urllib.request, time, sys
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          ES = os.environ["ES_URL"]
+          KEY = os.environ["TMDB_API_KEY"]
+          WORKERS = 40
+          BATCH = 100
+
+          MAPPING = {
+            "mappings": {
+              "properties": {
+                "title": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                "overview": {"type": "text"},
+                "release_date": {"type": "date", "format": "yyyy-MM-dd||yyyy||epoch_millis", "ignore_malformed": True},
+                "vote_average": {"type": "float"},
+                "vote_count": {"type": "integer"},
+                "popularity": {"type": "float"},
+                "genres": {"type": "keyword"},
+                "runtime": {"type": "integer"},
+                "budget": {"type": "long"},
+                "revenue": {"type": "long"},
+                "poster_path": {"type": "keyword"},
+                "backdrop_path": {"type": "keyword"},
+                "original_language": {"type": "keyword"},
+                "tagline": {"type": "text"},
+                "keywords": {"type": "keyword"},
+                "cast": {"type": "object"},
+                "director": {"type": "keyword"}
+              }
+            }
+          }
+
+          def wait_es():
+              for _ in range(30):
+                  try:
+                      urllib.request.urlopen(f"{ES}/_cluster/health", timeout=5)
+                      return
+                  except: time.sleep(2)
+              sys.exit("ES not ready")
+
+          def create_index():
+              try:
+                  urllib.request.urlopen(f"{ES}/movies")
+                  print("Index 'movies' already exists, deleting...")
+                  req = urllib.request.Request(f"{ES}/movies", method="DELETE")
+                  urllib.request.urlopen(req)
+              except: pass
+              req = urllib.request.Request(f"{ES}/movies", data=json.dumps(MAPPING).encode(),
+                                          headers={"Content-Type": "application/json"}, method="PUT")
+              urllib.request.urlopen(req)
+              print("Created 'movies' index with proper mapping")
+
+          def fetch(mid):
+              try:
+                  url = f"https://api.themoviedb.org/3/movie/{mid}?api_key={KEY}&append_to_response=credits,keywords"
+                  with urllib.request.urlopen(url, timeout=30) as r:
+                      d = json.loads(r.read())
+                  if d.get("status_code"): return None
+                  return {
+                      "title": d.get("title",""), "overview": d.get("overview",""),
+                      "release_date": d.get("release_date",""), "vote_average": d.get("vote_average",0),
+                      "vote_count": d.get("vote_count",0), "popularity": d.get("popularity",0),
+                      "genres": [g["name"] for g in d.get("genres",[])],
+                      "runtime": d.get("runtime",0), "budget": d.get("budget",0), "revenue": d.get("revenue",0),
+                      "poster_path": d.get("poster_path",""), "backdrop_path": d.get("backdrop_path",""),
+                      "original_language": d.get("original_language",""), "tagline": d.get("tagline",""),
+                      "keywords": [k["name"] for k in d.get("keywords",{}).get("keywords",[])],
+                      "cast": [{"name":c["name"],"character":c.get("character",""),"order":c.get("order",0)}
+                               for c in d.get("credits",{}).get("cast",[])[:10]],
+                      "director": next((c["name"] for c in d.get("credits",{}).get("crew",[])
+                                        if c.get("job")=="Director"), ""),
+                  }
+              except: return None
+
+          def bulk_index(batch):
+              lines = []
+              for mid, doc in batch:
+                  lines.append(json.dumps({"index":{"_index":"movies","_id":str(mid)}}))
+                  lines.append(json.dumps(doc))
+              req = urllib.request.Request(f"{ES}/_bulk", data=("\n".join(lines)+"\n").encode(),
+                                          headers={"Content-Type":"application/x-ndjson"})
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  resp = json.loads(r.read())
+              return sum(1 for i in resp.get("items",[]) if 200 <= i.get("index",{}).get("status",500) < 300)
+
+          wait_es()
+          create_index()
+
+          print("Downloading TMDB movie IDs...")
+          today = time.strftime("%m_%d_%Y")
+          for attempt in range(7):
+              d = time.strftime("%m_%d_%Y", time.gmtime(time.time() - attempt * 86400))
+              url = f"http://files.tmdb.org/p/exports/movie_ids_{d}.json.gz"
+              try:
+                  with urllib.request.urlopen(url, timeout=60) as r:
+                      data = gzip.decompress(r.read()).decode()
+                  print(f"Using export dated {d}")
+                  break
+              except: continue
+          else:
+              sys.exit("Could not download TMDB export")
+
+          all_movies = [json.loads(l) for l in data.strip().split("\n")]
+          ids = [m["id"] for m in sorted(all_movies, key=lambda x: -x.get("popularity",0)) if m.get("popularity",0) > 0]
+          print(f"Found {len(ids)} popular movies, loading all...\n")
+
+          loaded = failed = 0
+          t0 = time.time()
+          batch = []
+
+          for chunk_start in range(0, len(ids), 500):
+              chunk = ids[chunk_start:chunk_start+500]
+              with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                  futs = {ex.submit(fetch, mid): mid for mid in chunk}
+                  for f in as_completed(futs):
+                      m = f.result()
+                      if m:
+                          batch.append((futs[f], m))
+                          if len(batch) >= BATCH:
+                              loaded += bulk_index(batch)
+                              batch = []
+                              elapsed = time.time() - t0
+                              print(f"  {loaded:,} movies indexed ({elapsed:.0f}s, {loaded/elapsed:.0f}/s)")
+                      else:
+                          failed += 1
+              if batch:
+                  loaded += bulk_index(batch)
+                  batch = []
+                  elapsed = time.time() - t0
+                  print(f"  {loaded:,} movies indexed ({elapsed:.0f}s, {loaded/elapsed:.0f}/s)")
+
+          elapsed = time.time() - t0
+          print(f"\nDone! {loaded:,} movies in {elapsed:.0f}s ({failed:,} skipped)")
+        resources:
+          requests:
+            cpu: "2"
+            memory: 2Gi
+          limits:
+            cpu: "4"
+            memory: 4Gi
