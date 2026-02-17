@@ -150,6 +150,14 @@ function buildKeywordQuery(query: string) {
       functions: [
         {
           field_value_factor: {
+            field: 'popularity',
+            modifier: 'log1p',
+            missing: 1
+          },
+          weight: 0.8
+        },
+        {
+          field_value_factor: {
             field: 'vote_count',
             modifier: 'log2p',
             missing: 1
@@ -168,11 +176,11 @@ function buildKeywordQuery(query: string) {
           gauss: {
             release_date: {
               origin: 'now',
-              scale: '1825d',
+              scale: '3650d',
               decay: 0.5
             }
           },
-          weight: 0.2
+          weight: 0.15
         }
       ],
       score_mode: 'sum',
@@ -218,10 +226,10 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
           function_score: {
             query: { match_all: {} },
             functions: [
-              { field_value_factor: { field: 'popularity', modifier: 'log1p', missing: 1 }, weight: 1 },
+              { field_value_factor: { field: 'popularity', modifier: 'log1p', missing: 1 }, weight: 1.5 },
               { field_value_factor: { field: 'vote_average', modifier: 'none', missing: 5 }, weight: 0.5 },
               { field_value_factor: { field: 'vote_count', modifier: 'log2p', missing: 1 }, weight: 0.3 },
-              { gauss: { release_date: { origin: 'now', scale: '365d', decay: 0.5 } }, weight: 2 }
+              { gauss: { release_date: { origin: 'now', scale: '730d', decay: 0.5 } }, weight: 1.5 }
             ],
             score_mode: 'sum',
             boost_mode: 'replace'
