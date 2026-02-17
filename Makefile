@@ -1,4 +1,4 @@
-.PHONY: init plan apply destroy build deploy kubeconfig port-forward deploy-locust locust-logs stop-locust load-data setup-elser load-tmdb load-enriched create-tmdb-secret clean all
+.PHONY: init plan apply destroy build deploy kubeconfig port-forward deploy-locust locust-logs stop-locust setup-elser load-enriched create-tmdb-secret clean all
 
 TF := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
 
@@ -26,13 +26,10 @@ build:
 deploy:
 	./scripts/deploy.sh
 
-load-data:
-	./scripts/load-data.sh
-
 # Semantic search (ELSER) setup
 setup-elser:
 	kubectl apply -f k8s/setup-elser-job.yaml
-	@echo "Waiting for ELSER setup job to complete (this downloads the model, ~5 min)..."
+	@echo "Waiting for ELSER setup job to complete (~5 min)..."
 	kubectl wait --for=condition=complete job/setup-elser -n movie-demo --timeout=600s || \
 		(echo "Check progress: kubectl logs job/setup-elser -n movie-demo -f" && exit 1)
 
@@ -40,11 +37,6 @@ setup-elser:
 create-tmdb-secret:
 	@if [ -z "$$TMDB_API_KEY" ]; then echo "Error: TMDB_API_KEY env var not set"; exit 1; fi
 	kubectl create secret generic tmdb-api-key --from-literal=api-key=$$TMDB_API_KEY -n movie-demo --dry-run=client -o yaml | kubectl apply -f -
-
-load-tmdb: create-tmdb-secret
-	kubectl delete job load-tmdb-movies -n movie-demo --ignore-not-found
-	kubectl apply -f k8s/load-tmdb-job.yaml
-	@echo "TMDB load job started. Monitor: kubectl logs job/load-tmdb-movies -n movie-demo -f"
 
 load-enriched: create-tmdb-secret
 	kubectl delete job load-enriched-movies -n movie-demo --ignore-not-found
@@ -56,7 +48,7 @@ port-forward:
 	@echo "App: http://localhost:8080"
 	kubectl port-forward svc/movie-demo-app -n movie-demo 8080:80
 
-# Locust load testing (headless — starts automatically on deploy)
+# Locust load testing
 deploy-locust:
 	@LOCUST_ECR_URL=$$(cd tofu && $(TF) output -raw locust_ecr_repository_url 2>/dev/null); \
 	if [ -z "$$LOCUST_ECR_URL" ]; then echo "Error: No locust ECR repo. Run 'make apply' first."; exit 1; fi; \

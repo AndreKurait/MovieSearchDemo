@@ -1,6 +1,0 @@
-apiVersion: v2
-name: demo-app-nextjs
-description: Next.js movie search application
-type: application
-version: 2.0.0
-appVersion: "1.0.0"

@@ -46,23 +46,6 @@ spec:
                   except: time.sleep(2)
               return False
 
-          def check_elser():
-              """Check if ELSER model is deployed and running"""
-              try:
-                  req = urllib.request.Request(f"{ES_URL}/_ml/trained_models/.elser_model_2/_stats")
-                  with urllib.request.urlopen(req, timeout=10) as r:
-                      data = json.loads(r.read())
-                      for m in data.get("trained_model_stats", []):
-                          ds = m.get("deployment_stats", {})
-                          if ds.get("state") == "started":
-                              return True
-                          alloc = ds.get("allocation_status", {})
-                          if alloc.get("state") == "started":
-                              return True
-                  return False
-              except:
-                  return False
-
           def fetch_movie(movie_id):
               """Fetch movie with enriched data (credits, keywords) from TMDB"""
               for attempt in range(3):
@@ -151,7 +134,7 @@ spec:
 
           # Main
           print("=" * 60)
-          print("Enriched Movie Loader with ELSER")
+          print("Enriched Movie Loader")
           print(f"Max movies: {MAX_MOVIES}, Batch: {BATCH_SIZE}, Workers: {WORKERS}")
           print("=" * 60)
 
@@ -159,11 +142,7 @@ spec:
           if not wait_for_es():
               print("ES not ready"); sys.exit(1)
 
-          print("Checking ELSER model...")
-          if check_elser():
-              print("ELSER model is deployed - embeddings will be generated at index time")
-          else:
-              print("WARNING: ELSER model not deployed - indexing without embeddings")
+          print("Elasticsearch is ready")
 
           # Download daily export to get movie IDs
           print("\nDownloading TMDB movie IDs...")
@@ -218,8 +197,6 @@ spec:
                           rate = loaded / elapsed if elapsed > 0 else 0
                           print(f"Loaded {loaded} movies ({rate:.0f}/s, {failed} failed)...")
                           batch = []
-                          # ELSER inference is CPU-intensive, pace the requests
-                          time.sleep(0.5)
 
               if batch:
                   indexed = bulk_index(batch)

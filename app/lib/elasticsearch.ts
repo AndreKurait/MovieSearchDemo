@@ -233,7 +233,7 @@ export async function searchMovies(params: SearchParams): Promise<SearchResult> 
         from,
         size: pageSize,
         _source: {
-          excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
+          excludes: ['model_id', 'elser_error']
         },
         track_total_hits: true,
         aggs: {
@@ -275,7 +275,7 @@ export async function getMovie(id: string): Promise<Movie | null> {
     const result = await client.get({
       index: 'movies',
       id,
-      _source_excludes: ['overview_embedding', 'title_embedding']
+      _source_excludes: ['model_id', 'elser_error']
     });
     const body = getBody(result);
     return {
@@ -314,7 +314,7 @@ export async function getSimilarMovies(movieId: string, limit: number = 8): Prom
         },
         size: limit,
         _source: {
-          excludes: ['overview_embedding', 'title_embedding', 'model_id', 'elser_error']
+          excludes: ['model_id', 'elser_error']
         }
       }
     });

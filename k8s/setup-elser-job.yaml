@@ -19,7 +19,7 @@ spec:
         args:
         - |
           set -e
-          echo "=== ELSER v2 Setup ==="
+          echo "=== Index Setup ==="
 
           # Wait for ES to be ready
           echo "Waiting for Elasticsearch..."
@@ -32,74 +32,9 @@ spec:
             sleep 5
           done
 
-          # Step 0: Start trial license (required for ML features)
+          # Recreate movies index (keyword search only)
           echo ""
-          echo "=== Step 0: Starting trial license ==="
-          curl -s -X POST "$ES_URL/_license/start_trial?acknowledge=true" || echo "Trial already active"
-
-          # Step 1: Download ELSER v2 model
-          echo ""
-          echo "=== Step 1: Downloading ELSER v2 model ==="
-          curl -s -X PUT "$ES_URL/_ml/trained_models/.elser_model_2" \
-            -H 'Content-Type: application/json' \
-            -d '{"input": {"field_names": ["text_field"]}}' \
-            --max-time 600 || echo "Model may already exist, continuing..."
-
-          # Step 2: Start model deployment
-          echo ""
-          echo "=== Step 2: Starting ELSER model deployment ==="
-          curl -s -X POST "$ES_URL/_ml/trained_models/.elser_model_2/deployment/_start?wait_for=started&timeout=5m" \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "number_of_allocations": 1,
-              "threads_per_allocation": 2,
-              "queue_capacity": 500
-            }' --max-time 360 && echo " -> Model deployed"
-
-          # Step 3: Create the ingest pipeline
-          echo ""
-          echo "=== Step 3: Creating ELSER ingest pipeline ==="
-          curl -s -X PUT "$ES_URL/_ingest/pipeline/elser-ingest" \
-            -H 'Content-Type: application/json' \
-            -d '{
-              "description": "ELSER v2 inference pipeline for movie search",
-              "processors": [
-                {
-                  "inference": {
-                    "model_id": ".elser_model_2",
-                    "input_output": [
-                      {
-                        "input_field": "overview",
-                        "output_field": "overview_embedding"
-                      }
-                    ]
-                  }
-                },
-                {
-                  "inference": {
-                    "model_id": ".elser_model_2",
-                    "input_output": [
-                      {
-                        "input_field": "title",
-                        "output_field": "title_embedding"
-                      }
-                    ]
-                  }
-                }
-              ],
-              "on_failure": [
-                {
-                  "set": {
-                    "field": "elser_error",
-                    "value": "{{_ingest.on_failure_message}}"
-                  }
-                }
-              ]
-            }' && echo " -> Pipeline created"
-
-          # Step 4: Recreate movies index with ELSER fields
-          echo ""
-          echo "=== Step 4: Recreating movies index ==="
+          echo "=== Creating movies index ==="
           curl -s -X DELETE "$ES_URL/movies" || echo "No existing index"
           sleep 2
 
@@ -109,8 +44,6 @@ spec:
               "settings": {
                 "number_of_shards": 1,
                 "number_of_replicas": 0,
-                "default_pipeline": "elser-ingest",
-                "index.mapping.total_fields.limit": 5000,
                 "analysis": {
                   "analyzer": {
                     "autocomplete": {
@@ -189,15 +122,13 @@ spec:
                     "fields": {
                       "text": {"type": "text", "analyzer": "english"}
                     }
-                  },
-                  "overview_embedding": {"type": "sparse_vector"},
-                  "title_embedding": {"type": "sparse_vector"}
+                  }
                 }
               }
             }' && echo " -> Index created"
 
           echo ""
-          echo "=== ELSER Setup Complete ==="
+          echo "=== Index Setup Complete ==="
         resources:
           requests:
             cpu: 100m
