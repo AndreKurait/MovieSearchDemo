@@ -21,11 +21,11 @@ spec:
         - name: TOTAL_TARGET_DOCS
           value: "3430000000"
         - name: BATCH_SIZE
-          value: "3000"
+          value: "5000"
         - name: THREADS
-          value: "2"
+          value: "4"
         - name: THROTTLE_SLEEP_MS
-          value: "50"
+          value: "0"
         command: ["python", "-u", "-c"]
         args:
         - |
@@ -271,8 +271,8 @@ spec:
           print(f"Total index doc count: {final_count:,}")
         resources:
           requests:
-            cpu: "1"
-            memory: 512Mi
-          limits:
             cpu: "2"
             memory: 1Gi
+          limits:
+            cpu: "4"
+            memory: 2Gi
