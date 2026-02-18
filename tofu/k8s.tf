@@ -18,7 +18,9 @@ resource "kubernetes_storage_class_v1" "ebs_sc" {
   reclaim_policy         = "Delete"
   allow_volume_expansion = true
   parameters = {
-    type = "gp3"
+    type       = "gp3"
+    iops       = "10000"
+    throughput = "500"
   }
 }
 
