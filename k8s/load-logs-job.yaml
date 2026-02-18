@@ -189,21 +189,23 @@ spec:
                   else:
                       print(f"Index creation: {e}")
 
-          def bulk_send(docs):
-              body = ""
-              for d in docs:
-                  body += '{"index":{}}\n' + json.dumps(d, separators=(',', ':')) + "\n"
-              data = body.encode()
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+
+          TARGET_BULK_BYTES = 10 * 1024 * 1024  # 10MB per bulk request
+          PARALLEL_BULKS = 4  # concurrent bulk requests per worker
+
+          def bulk_send(data):
               for attempt in range(3):
                   try:
                       req = Request(f"{ES}/{INDEX}/_bulk", data=data, method="POST",
                                     headers={"Content-Type": "application/json"})
                       resp = urlopen(req, timeout=120)
                       result = json.loads(resp.read())
+                      n = len(result.get("items", []))
                       if result.get("errors"):
                           errs = sum(1 for i in result["items"] if i["index"].get("error"))
-                          return len(docs) - errs
-                      return len(docs)
+                          return n - errs
+                      return n
                   except Exception as e:
                       if attempt == 2:
                           print(f"  Bulk failed: {e}")
@@ -211,10 +213,23 @@ spec:
                       time.sleep(2 ** attempt)
               return 0
 
+          def build_bulk_payload(seq_start, count):
+              lines = []
+              size = 0
+              action = b'{"index":{}}\n'
+              for i in range(count):
+                  doc = json.dumps(make_log(seq_start + i), separators=(',', ':')).encode()
+                  entry_size = len(action) + len(doc) + 1
+                  lines.append(action)
+                  lines.append(doc)
+                  lines.append(b'\n')
+                  size += entry_size
+              return b''.join(lines), count
+
           # --- Main ---
           print(f"=== Log Generator Worker {WORKER}/{COMPLETIONS} ===")
           print(f"Total target: {TOTAL_TARGET:,} docs across all workers")
-          print(f"Throttle: {THROTTLE_MS}ms between batches, batch size {BATCH}")
+          print(f"Parallel bulks: {PARALLEL_BULKS}, target ~10MB per request")
 
           print("Waiting for Elasticsearch...")
           wait_for_es()
@@ -228,7 +243,6 @@ spec:
           current = get_current_doc_count()
           remaining = max(0, TOTAL_TARGET - current)
           my_share = remaining // COMPLETIONS
-          # Last worker picks up remainder
           if WORKER == COMPLETIONS - 1:
               my_share = remaining - (remaining // COMPLETIONS) * (COMPLETIONS - 1)
 
@@ -238,31 +252,38 @@ spec:
               print("Target already reached, nothing to do.")
               sys.exit(0)
 
+          # Estimate docs per 10MB bulk (~350 bytes per doc)
+          DOCS_PER_BULK = TARGET_BULK_BYTES // 400
+
           total_docs = 0
-          seq = WORKER * 500_000_000  # Offset to avoid ID collisions with previous runs
+          seq = WORKER * 500_000_000
           start = time.time()
-          throttle_s = THROTTLE_MS / 1000.0
+          last_print = 0
 
-          while total_docs < my_share:
-              batch_size = min(BATCH, my_share - total_docs)
-              batch = [make_log(seq + i) for i in range(batch_size)]
-              seq += batch_size
-              indexed = bulk_send(batch)
-              total_docs += indexed
+          with ThreadPoolExecutor(max_workers=PARALLEL_BULKS) as executor:
+              while total_docs < my_share:
+                  futures = []
+                  for _ in range(PARALLEL_BULKS):
+                      if total_docs + len(futures) * DOCS_PER_BULK >= my_share:
+                          break
+                      chunk = min(DOCS_PER_BULK, my_share - total_docs - len(futures) * DOCS_PER_BULK)
+                      payload, count = build_bulk_payload(seq, chunk)
+                      seq += chunk
+                      futures.append(executor.submit(bulk_send, payload))
 
-              if throttle_s > 0:
-                  time.sleep(throttle_s)
+                  for f in as_completed(futures):
+                      indexed = f.result()
+                      total_docs += indexed
+                      if indexed == 0:
+                          print(f"Worker {WORKER}: Bulk returned 0, pausing 10s...")
+                          time.sleep(10)
 
-              if total_docs % (BATCH * 100) < BATCH:
-                  elapsed = time.time() - start
-                  rate = total_docs / elapsed if elapsed > 0 else 0
-                  pct = total_docs / my_share * 100
-                  print(f"Worker {WORKER}: {total_docs:,}/{my_share:,} ({pct:.1f}%), "
-                        f"{rate:,.0f} docs/s")
-
-              if indexed == 0:
-                  print(f"Worker {WORKER}: Bulk insert returned 0, pausing 30s...")
-                  time.sleep(30)
+                  if total_docs - last_print >= 1_000_000:
+                      elapsed = time.time() - start
+                      rate = total_docs / elapsed if elapsed > 0 else 0
+                      pct = total_docs / my_share * 100
+                      print(f"Worker {WORKER}: {total_docs:,}/{my_share:,} ({pct:.1f}%), {rate:,.0f} docs/s")
+                      last_print = total_docs
 
           elapsed = time.time() - start
           final_count = get_current_doc_count()
