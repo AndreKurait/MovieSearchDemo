@@ -32,7 +32,7 @@ variable "es_version" {
 variable "es_replicas" {
   description = "Number of Elasticsearch StatefulSet replicas"
   type        = number
-  default     = 6
+  default     = 10
 }
 
 variable "es_storage_size" {
