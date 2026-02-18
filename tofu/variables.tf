@@ -38,7 +38,7 @@ variable "es_replicas" {
 variable "es_storage_size" {
   description = "PVC storage size per ES node"
   type        = string
-  default     = "500Gi"
+  default     = "2000Gi"
 }
 
 variable "es_cpu" {
