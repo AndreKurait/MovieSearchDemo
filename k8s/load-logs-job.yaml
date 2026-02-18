@@ -5,7 +5,7 @@ metadata:
   namespace: movie-demo
 spec:
   ttlSecondsAfterFinished: 3600
-  backoffLimit: 6
+  backoffLimit: 20
   completions: 10
   parallelism: 10
   completionMode: Indexed
