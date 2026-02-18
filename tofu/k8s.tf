@@ -19,8 +19,8 @@ resource "kubernetes_storage_class_v1" "ebs_sc" {
   allow_volume_expansion = true
   parameters = {
     type       = "gp3"
-    iops       = "10000"
-    throughput = "500"
+    iops       = "16000"
+    throughput = "1000"
   }
 }
 
