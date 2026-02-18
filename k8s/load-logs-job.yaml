@@ -6,8 +6,8 @@ metadata:
 spec:
   ttlSecondsAfterFinished: 3600
   backoffLimit: 20
-  completions: 10
-  parallelism: 10
+  completions: 100
+  parallelism: 100
   completionMode: Indexed
   template:
     spec:
@@ -39,7 +39,7 @@ spec:
           THREADS = int(os.environ.get("THREADS", "2"))
           THROTTLE_MS = int(os.environ.get("THROTTLE_SLEEP_MS", "50"))
           WORKER = int(os.environ.get("JOB_COMPLETION_INDEX", "0"))
-          COMPLETIONS = int(os.environ.get("JOB_COMPLETIONS", "10"))
+          COMPLETIONS = int(os.environ.get("JOB_COMPLETIONS", "100"))
           INDEX = "application-logs"
 
           SERVICES = ["api-gateway", "movie-service", "user-service", "search-service",
@@ -192,7 +192,7 @@ spec:
           from concurrent.futures import ThreadPoolExecutor, as_completed
 
           TARGET_BULK_BYTES = 10 * 1024 * 1024  # 10MB per bulk request
-          PARALLEL_BULKS = 4  # concurrent bulk requests per worker
+          PARALLEL_BULKS = 2  # concurrent bulk requests per worker
 
           def bulk_send(data):
               for attempt in range(3):
@@ -292,8 +292,8 @@ spec:
           print(f"Total index doc count: {final_count:,}")
         resources:
           requests:
-            cpu: "2"
-            memory: 1Gi
+            cpu: 500m
+            memory: 512Mi
           limits:
-            cpu: "4"
-            memory: 2Gi
+            cpu: "1"
+            memory: 1Gi
