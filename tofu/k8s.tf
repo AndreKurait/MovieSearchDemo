@@ -112,20 +112,36 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
           }
         }
 
+        init_container {
+          name  = "init-es-keystore"
+          image = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
+          command = ["bash", "-ec"]
+          args = [<<-EOT
+            if [[ -s /keystore/elasticsearch.keystore ]]; then
+              echo "Keystore already exists; skipping"
+              exit 0
+            fi
+            TMP_CONF="$(mktemp -d)"
+            export ES_PATH_CONF="$TMP_CONF"
+            bin/elasticsearch-keystore create
+            cp "$ES_PATH_CONF/elasticsearch.keystore" /keystore/elasticsearch.keystore
+            chmod 0600 /keystore/elasticsearch.keystore
+            rm -rf "$TMP_CONF"
+          EOT
+          ]
+          volume_mount {
+            name       = "es-keystore"
+            mount_path = "/keystore"
+          }
+        }
+
         container {
           name  = "elasticsearch"
           image = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
 
           command = [
             "bash", "-c",
-            <<-EOT
-            if [ -f /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token ]; then
-              mkdir -p /usr/share/elasticsearch/config/repository-s3
-              ln -sf /var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token \
-                /usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file
-            fi
-            exec /usr/local/bin/docker-entrypoint.sh eswrapper
-            EOT
+            "exec /usr/local/bin/docker-entrypoint.sh eswrapper"
           ]
 
           port {
@@ -137,10 +153,6 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
             name           = "transport"
           }
 
-          env {
-            name  = "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"
-            value = "/usr/share/elasticsearch/config/repository-s3/aws-web-identity-token-file"
-          }
           env {
             name = "node.name"
             value_from {
@@ -217,6 +229,73 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
             name       = "es-data"
             mount_path = "/usr/share/elasticsearch/data"
           }
+
+          volume_mount {
+            name       = "es-keystore"
+            mount_path = "/usr/share/elasticsearch/config/elasticsearch.keystore"
+            sub_path   = "elasticsearch.keystore"
+          }
+        }
+
+        container {
+          name  = "refresh-s3-keystore"
+          image = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
+          command = ["bash", "-ec"]
+          args = [<<-EOT
+            set -euo pipefail
+            : "$${AWS_CONTAINER_CREDENTIALS_FULL_URI:?missing}"
+            : "$${AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE:?missing}"
+            while true; do
+              TOKEN="$(cat "$AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")"
+              JSON="$(curl -sS -H "Authorization: $TOKEN" "$AWS_CONTAINER_CREDENTIALS_FULL_URI")"
+              AK="$(echo "$JSON" | sed -n 's/.*"AccessKeyId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+              SK="$(echo "$JSON" | sed -n 's/.*"SecretAccessKey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+              ST="$(echo "$JSON" | sed -n 's/.*"Token"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+              if [[ -z "$AK" || -z "$SK" || -z "$ST" ]]; then
+                echo "Failed to parse credentials" >&2
+                sleep 10
+                continue
+              fi
+              TMP_CONF="$(mktemp -d)"
+              export ES_PATH_CONF="$TMP_CONF"
+              cp /usr/share/elasticsearch/config/elasticsearch.keystore "$ES_PATH_CONF/elasticsearch.keystore" || true
+              echo -n "$AK" | bin/elasticsearch-keystore add -f -x s3.client.default.access_key
+              echo -n "$SK" | bin/elasticsearch-keystore add -f -x s3.client.default.secret_key
+              echo -n "$ST" | bin/elasticsearch-keystore add -f -x s3.client.default.session_token
+              cp "$ES_PATH_CONF/elasticsearch.keystore" /usr/share/elasticsearch/config/elasticsearch.keystore
+              chmod 0600 /usr/share/elasticsearch/config/elasticsearch.keystore
+              rm -rf "$TMP_CONF"
+              POD_IP="$(hostname -i | awk '{print $1}')"
+              until curl -sS -o /dev/null "http://$${POD_IP}:9200"; do sleep 2; done
+              curl -sS -X POST "http://$${POD_IP}:9200/_nodes/reload_secure_settings" \
+                -H 'Content-Type: application/json' -d '{}' >/dev/null || true
+              echo "Credentials refreshed"
+              sleep 300
+            done
+          EOT
+          ]
+
+          volume_mount {
+            name       = "es-keystore"
+            mount_path = "/usr/share/elasticsearch/config/elasticsearch.keystore"
+            sub_path   = "elasticsearch.keystore"
+          }
+
+          resources {
+            requests = {
+              cpu    = "100m"
+              memory = "128Mi"
+            }
+            limits = {
+              cpu    = "200m"
+              memory = "256Mi"
+            }
+          }
+        }
+
+        volume {
+          name = "es-keystore"
+          empty_dir {}
         }
       }
     }
