@@ -154,10 +154,11 @@ spec:
 
           def create_index():
               body = json.dumps({
-                  "settings": {"number_of_shards": 100, "number_of_replicas": 0,
+                  "settings": {"number_of_shards": 100, "number_of_replicas": 1,
                                "refresh_interval": "30s",
                                "translog.durability": "async",
-                               "translog.sync_interval": "30s"},
+                               "translog.sync_interval": "30s",
+                               "translog.flush_threshold_size": "1gb"},
                   "mappings": {"properties": {
                       "@timestamp": {"type": "date"},
                       "level": {"type": "keyword"},
