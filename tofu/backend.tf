@@ -1,9 +1,6 @@
 terraform {
   backend "s3" {
-    bucket         = "movie-demo-tofu-state-287951776178"
-    key            = "movie-demo/terraform.tfstate"
-    region         = "us-east-1"
-    dynamodb_table = "movie-demo-tofu-lock"
-    encrypt        = true
+    # Supply your own values with: make init BACKEND_CONFIG=backend.hcl
+    # See backend.hcl.example. Credentials come from the AWS credential chain.
   }
 }

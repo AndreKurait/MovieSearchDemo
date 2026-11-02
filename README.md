@@ -2,11 +2,15 @@
 
 Movie search app on EKS Auto Mode with self-managed Elasticsearch or Amazon OpenSearch Service, featuring keyword search with autocomplete and real TMDB movie data. Includes Locust load testing.
 
+This is a demonstration project. Start with local application development below;
+the cloud workflow provisions billable infrastructure and starts load generators.
+Review the Terraform plan and Kubernetes manifests before deploying.
+
 ## Prerequisites
 
 - AWS account with EKS access
 - [OpenTofu](https://opentofu.org) or Terraform >= 1.5
-- AWS CLI v1.31+ or v2 (must output `client.authentication.k8s.io/v1beta1`)
+- AWS CLI v2 configured for your own account
 - Docker (with buildx for multi-arch builds)
 - kubectl v1.31+
 - [TMDB API key](https://www.themoviedb.org/settings/api) (free)
@@ -14,17 +18,35 @@ Movie search app on EKS Auto Mode with self-managed Elasticsearch or Amazon Open
 ### AWS Credentials
 
 ```bash
-# Using ada (Amazon internal)
-ada credentials update --account <ACCOUNT_ID> --role Admin --provider isengard --once
+# Configure an IAM Identity Center profile, if your organization uses one.
+aws configure sso --profile movie-demo
+aws sso login --profile movie-demo
+export AWS_PROFILE=movie-demo
 
 # Verify
 aws sts get-caller-identity
 ```
 
+Other standard AWS credential providers work too. The scripts use the AWS CLI
+credential chain.
+
+### State Backend
+
+Use an existing S3 state bucket and DynamoDB lock table in your own account.
+Copy `tofu/backend.hcl.example` to `tofu/backend.hcl` and replace the example
+bucket/table names and region before running `make init`. The local configuration
+file is ignored by Git. The lock table must use a string partition key named
+`LockID`.
+
+If you already deployed this project, retain your existing backend values.
+Changing the backend location is a separate state-migration operation; this
+update does not move or delete your state.
+
 ## Quick Start
 
 ```bash
 make init          # Initialize terraform
+make plan          # Inspect the resources and sizing
 make apply         # Deploy infrastructure (~15 min)
 make kubeconfig    # Configure kubectl
 make build         # Build & push Docker images (app + locust)
@@ -75,9 +97,10 @@ make port-forward  # Access at http://localhost:8080
 |---------|-------------|
 | `make init` | Initialize OpenTofu |
 | `make plan` | Preview infrastructure changes |
-| `make apply` | Deploy infrastructure |
-| `make destroy` | Tear down everything |
+| `make apply` | Review and confirm infrastructure deployment |
+| `make destroy` | Review and confirm infrastructure teardown |
 | `make kubeconfig` | Configure kubectl for the cluster |
+| `make clean` | Remove local caches and saved plan; preserve state and lock files |
 
 ### Build & Deploy
 
@@ -209,3 +232,8 @@ npm run dev
 ```
 
 Requires Elasticsearch at `http://localhost:9200` (or configure via `.env.local`).
+
+Use `npm ci` for a reproducible install from the committed lockfile. From the
+repository root, `make check` runs the maintenance regression test, shell syntax
+checks, and TypeScript checking without deploying infrastructure. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the development workflow.

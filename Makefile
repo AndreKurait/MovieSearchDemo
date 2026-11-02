@@ -1,22 +1,28 @@
-.PHONY: init plan apply destroy build deploy kubeconfig port-forward deploy-locust locust-logs stop-locust setup-elser load-enriched create-tmdb-secret clean all
+.PHONY: require-tf init plan apply destroy build deploy kubeconfig port-forward deploy-locust locust-logs stop-locust setup-elser load-movies clean check all
+.DEFAULT_GOAL := init
 
-TF := $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
+TF ?= $(shell command -v tofu 2>/dev/null || command -v terraform 2>/dev/null)
+BACKEND_CONFIG ?= backend.hcl
+
+require-tf:
+	@test -n "$(TF)" || { echo "Install OpenTofu or Terraform, or set TF to its executable."; exit 1; }
 
 # Infrastructure
-init:
-	cd tofu && $(TF) init
+init: require-tf
+	@test -f "tofu/$(BACKEND_CONFIG)" || { echo "Copy tofu/backend.hcl.example to tofu/$(BACKEND_CONFIG) and configure your own state backend first."; exit 1; }
+	cd tofu && $(TF) init -backend-config="$(BACKEND_CONFIG)"
 
-plan:
+plan: require-tf
 	cd tofu && $(TF) plan
 
-apply:
-	cd tofu && $(TF) apply -auto-approve
+apply: require-tf
+	cd tofu && $(TF) apply
 
-destroy:
-	cd tofu && $(TF) destroy -auto-approve
+destroy: require-tf
+	cd tofu && $(TF) destroy
 
 # Kubernetes
-kubeconfig:
+kubeconfig: require-tf
 	$$(cd tofu && $(TF) output -raw configure_kubectl)
 
 # Build and deploy
@@ -61,8 +67,18 @@ stop-locust:
 
 # Cleanup
 clean:
-	rm -rf tofu/.terraform* tofu/*.tfstate* tofu/tfplan
+	rm -rf app/.next tofu/.terraform tofu/tfplan
+
+# Checks that do not provision infrastructure or contact a search cluster.
+check:
+	python3 -m unittest discover -s tests -v
+	bash -n scripts/build.sh scripts/deploy.sh scripts/load-data.sh
+	cd app && npm run typecheck
 
 # Full deployment
-all: init apply kubeconfig build deploy
+all: init
+	$(MAKE) apply
+	$(MAKE) kubeconfig
+	$(MAKE) build
+	$(MAKE) deploy
 	@echo "Done! Run 'make port-forward' to access the app"
