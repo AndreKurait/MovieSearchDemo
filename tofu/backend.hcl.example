@@ -1,0 +1,7 @@
+# Use an existing S3 state bucket and DynamoDB lock table in your own account.
+# Copy this file to backend.hcl and replace the bucket/table names.
+bucket         = "your-unique-terraform-state-bucket"
+key            = "movie-demo/terraform.tfstate"
+region         = "us-east-1"
+dynamodb_table = "your-terraform-lock-table"
+encrypt        = true

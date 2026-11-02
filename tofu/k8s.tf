@@ -59,9 +59,9 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
   }
 
   spec {
-    service_name           = kubernetes_service_v1.elasticsearch_headless.metadata[0].name
-    replicas               = var.es_replicas
-    pod_management_policy  = "Parallel"
+    service_name          = kubernetes_service_v1.elasticsearch_headless.metadata[0].name
+    replicas              = var.es_replicas
+    pod_management_policy = "Parallel"
 
     selector {
       match_labels = {
@@ -113,8 +113,8 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
         }
 
         init_container {
-          name  = "init-es-keystore"
-          image = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
+          name    = "init-es-keystore"
+          image   = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
           command = ["bash", "-ec"]
           args = [<<-EOT
             if [[ -s /keystore/elasticsearch.keystore ]]; then
@@ -238,8 +238,8 @@ resource "kubernetes_stateful_set_v1" "elasticsearch" {
         }
 
         container {
-          name  = "refresh-s3-keystore"
-          image = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
+          name    = "refresh-s3-keystore"
+          image   = "docker.elastic.co/elasticsearch/elasticsearch:${var.es_version}"
           command = ["bash", "-ec"]
           args = [<<-EOT
             set -euo pipefail
@@ -349,7 +349,7 @@ resource "kubernetes_service_v1" "elasticsearch_nlb" {
     name      = "elasticsearch-nlb"
     namespace = kubernetes_namespace.movie_demo.metadata[0].name
     annotations = {
-      "service.beta.kubernetes.io/aws-load-balancer-scheme"         = "internal"
+      "service.beta.kubernetes.io/aws-load-balancer-scheme"          = "internal"
       "service.beta.kubernetes.io/aws-load-balancer-nlb-target-type" = "ip"
     }
   }

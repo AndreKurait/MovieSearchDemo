@@ -7,6 +7,9 @@
 **/*.tfvars
 !*.tfvars.example
 **/.terraform.tfstate.lock.info
+**/backend.hcl
+**/*.tsbuildinfo
+**/__pycache__/
 
 # Node.js
 **/node_modules/
